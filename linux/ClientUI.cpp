@@ -531,7 +531,7 @@ class ClientWindow final : public QWidget {
         audioForm->addRow(QString(), audioEnabled);
         audioBuffer = new QComboBox;
         audioBuffer->addItem(QStringLiteral("自动"), 0);
-        for (int ms : {1, 2, 4, 8, 12, 16, 20, 30, 50, 80, 120, 200})
+        for (int ms : {1, 2, 4, 8, 10, 12, 16, 20, 30, 50, 80, 120, 200})
             audioBuffer->addItem(QStringLiteral("%1 ms").arg(ms), ms);
         audioBuffer->setCurrentIndex(
             std::max(0, audioBuffer->findData(settings.value("audioBufferMs", 0).toInt())));
