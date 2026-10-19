@@ -12,6 +12,7 @@ The Mac sender creates a virtual display, captures its contents, and encodes the
 - **Two codecs:** PyroWave GPU encoding and decoding, or hardware H.264 encoding through macOS VideoToolbox. The Linux H.264 decoder prefers VAAPI hardware acceleration.
 - **Image quality and performance:** Lanczos scaling on the Mac, dirty-region encoding for PyroWave, separate cursor rendering, and partial-frame recovery under packet loss when enough data is available.
 - **Keyboard and mouse control:** Keyboard shortcut capture, movement across display boundaries, relative mouse input for games, and configurable release-control and fullscreen shortcuts.
+- **System audio:** Uncompressed 48 kHz, 16-bit stereo PCM over UDP, played through the Linux default output device. Audio uses about 1.54 Mbps before packet overhead.
 - **Connection and status:** LAN discovery, manual address entry, a client performance overlay, a Mac menu bar interface, and launch at login.
 
 The sender currently runs on macOS and the receiver runs on Linux. The project is in early development.

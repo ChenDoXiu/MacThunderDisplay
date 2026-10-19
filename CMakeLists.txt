@@ -16,7 +16,7 @@ target_link_libraries(td-common PUBLIC Threads::Threads)
 if(APPLE)
   enable_language(OBJCXX)
   add_subdirectory(vendor/pyrowave-metal)
-  add_library(td-engine STATIC mac/Engine.mm mac/H264Encoder.mm)
+  add_library(td-engine STATIC mac/Engine.mm mac/H264Encoder.mm mac/AudioSender.mm)
   target_compile_options(td-engine PRIVATE -fobjc-arc)
   target_include_directories(td-engine PRIVATE vendor/pyrowave-metal)
   target_link_libraries(
@@ -52,7 +52,7 @@ else()
   target_include_directories(thunder-display-client PRIVATE linux common)
   target_link_libraries(thunder-display-client PRIVATE Qt6::Widgets Qt6::Network)
   add_executable(thunder-display-receiver linux/Main.cpp linux/Receiver.cpp linux/VulkanView.cpp
-                                          linux/H264Decoder.cpp)
+                                          linux/H264Decoder.cpp linux/AudioPlayer.cpp)
   target_include_directories(thunder-display-receiver PRIVATE vendor/pyrowave linux)
   target_link_libraries(thunder-display-receiver PRIVATE td-common pyrowave-shared SDL3::SDL3
                                                          Vulkan::Vulkan)

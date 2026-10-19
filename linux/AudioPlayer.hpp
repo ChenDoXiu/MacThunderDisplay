@@ -1,0 +1,23 @@
+#pragma once
+#include <cstdint>
+#include <memory>
+#include <netinet/in.h>
+
+class ClockSync;
+
+class AudioPlayer {
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+
+  public:
+    struct Statistics {
+        uint64_t packets = 0, lost = 0, underruns = 0, resets = 0;
+        double queuedMs = 0, captureToReceiveMs = 0;
+    };
+
+    AudioPlayer(const sockaddr_in &server, ClockSync &clock);
+    ~AudioPlayer();
+    uint16_t port() const;
+    void setSession(uint64_t session);
+    Statistics statistics() const;
+};

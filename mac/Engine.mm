@@ -14,6 +14,7 @@
 #include "DisplayLayout.hpp"
 #include "RealtimeThread.hpp"
 #include "H264Encoder.hpp"
+#include "AudioSender.hpp"
 #include "pyrowave_metal.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -62,6 +63,7 @@ struct Connection {
     sockaddr_in peer{};
     uint64_t session = 0;
     int udp = -1;
+    int audioUDP = -1;
     std::mutex udpSendMutex;
     std::vector<int> extraUDP;
     size_t nextLane = 0;
@@ -71,6 +73,7 @@ struct Connection {
         for (int fd : extraUDP)
             td::closeSocket(fd);
         td::closeSocket(udp);
+        td::closeSocket(audioUDP);
     }
 };
 
@@ -142,7 +145,7 @@ static uint64_t cursorShapeCounter = 0;
 static dispatch_source_t patternTimer;
 static CVPixelBufferRef patternBuffer = nullptr;
 static id<MTLComputePipelineState> patternPipeline;
-static dispatch_queue_t captureQueue, encodeQueue;
+static dispatch_queue_t captureQueue, encodeQueue, audioQueue;
 static id<MTLDevice> mtl;
 static id<MTLCommandQueue> conversionQueue;
 static id<MTLComputePipelineState> conversionPipeline;
@@ -1057,13 +1060,22 @@ static void controlLoop(int socket) {
             }
             int requestedCodec = 0;
             if (request >> option) {
-                std::string codecName, extra;
+                std::string codecName;
                 if (option != "CODEC" || !(request >> codecName) ||
-                    (codecName != "h264" && codecName != "pyrowave") || (request >> extra)) {
+                    (codecName != "h264" && codecName != "pyrowave")) {
                     reply(peer, "ERROR Invalid codec");
                     continue;
                 }
                 requestedCodec = codecName == "h264";
+            }
+            int audioPort = 0;
+            if (request >> option) {
+                std::string extra;
+                if (option != "AUDIO1" || !(request >> audioPort) || audioPort < 1 ||
+                    audioPort > 65535 || (request >> extra)) {
+                    reply(peer, "ERROR Invalid audio port");
+                    continue;
+                }
             }
             if (requestedCodec) {
                 chroma = 0;
@@ -1223,6 +1235,17 @@ static void controlLoop(int socket) {
                     reply(peer, "ERROR Cannot connect video lanes");
                     continue;
                 }
+                if (audioPort) {
+                    sockaddr_in target = peer;
+                    target.sin_port = htons(uint16_t(audioPort));
+                    c->audioUDP = td::bindUdp();
+                    if (::connect(c->audioUDP, reinterpret_cast<const sockaddr *>(&target),
+                                  sizeof(target)) < 0) {
+                        td::closeSocket(c->audioUDP);
+                        c->audioUDP = -1;
+                        fprintf(stderr, "[Audio] cannot connect audio socket\n");
+                    }
+                }
                 fprintf(stderr, "[Transport] video_lanes=%zu send_mode=serialized_batch\n",
                         1 + c->extraUDP.size());
                 lastPointer = 0;
@@ -1242,6 +1265,8 @@ static void controlLoop(int socket) {
                 << (use444 ? 1 : 0) << ' ' << neighboringEdges() << ' ' << (separateCursor ? 1 : 0)
                 << " LANES " << 1 + c->extraUDP.size() << " CODEC "
                 << (useH264 ? "h264" : "pyrowave");
+            if (c->audioUDP >= 0)
+                out << " AUDIO1 48000 2 16 120";
             reply(peer, out.str());
             if ((firstConnection || welcomeNeedsFrame) && !patternTimer) {
                 welcomeNeedsFrame = false;
@@ -2271,6 +2296,7 @@ struct CaptureCadence {
 
 @interface CaptureOutput : NSObject <SCStreamOutput, SCStreamDelegate> {
     CaptureCadence cadence;
+    AudioSender audioSender;
 }
 @end
 @implementation CaptureOutput
@@ -2278,7 +2304,19 @@ struct CaptureCadence {
 - (void)stream:(SCStream *)s
     didOutputSampleBuffer:(CMSampleBufferRef)sample
                    ofType:(SCStreamOutputType)type {
-    if (type != SCStreamOutputTypeScreen || !running || !configured || s != stream)
+    if (!running || !configured || s != stream)
+        return;
+    if (type == SCStreamOutputTypeAudio) {
+        std::shared_ptr<Connection> c;
+        {
+            std::lock_guard<std::mutex> lock(connectionMutex);
+            c = connection;
+        }
+        if (c && c->audioUDP >= 0)
+            audioSender.consume(sample, c->audioUDP, c->session);
+        return;
+    }
+    if (type != SCStreamOutputTypeScreen)
         return;
     lastCaptureEventNs = td::nowNs();
     NSArray *attachments =
@@ -2576,7 +2614,10 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                              kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
                                          config.showsCursor = !separateCursor;
                                          config.scalesToFit = YES;
-                                         config.capturesAudio = NO;
+                                         config.capturesAudio = YES;
+                                         config.sampleRate = td::audio::Rate;
+                                         config.channelCount = td::audio::Channels;
+                                         config.excludesCurrentProcessAudio = YES;
                                          captureOutput = [CaptureOutput new];
                                          SCStream *newStream =
                                              [[SCStream alloc] initWithFilter:filter
@@ -2591,6 +2632,13 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                              return;
                                          }
                                          stream = newStream;
+                                         if (![newStream addStreamOutput:captureOutput
+                                                                    type:SCStreamOutputTypeAudio
+                                                      sampleHandlerQueue:audioQueue
+                                                                   error:&err])
+                                             fprintf(stderr,
+                                                     "[Audio] capture output unavailable: %s\n",
+                                                     err.localizedDescription.UTF8String);
                                          [newStream startCaptureWithCompletionHandler:^(
                                                         NSError *error) {
                                              dispatch_async(dispatch_get_main_queue(), ^{
@@ -2755,6 +2803,7 @@ static const char *configureDisplay(int width, int height, int retina, double sc
             DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
         captureQueue = dispatch_queue_create("display.capture", attr);
         encodeQueue = dispatch_queue_create("display.encode", attr);
+        audioQueue = dispatch_queue_create("display.audio", attr);
         configured = true;
         startSender();
         if (separateCursor) {
@@ -2884,6 +2933,9 @@ static void stopDisplay() {
                       });
     if (encodeQueue)
         dispatch_sync(encodeQueue, ^{
+                      });
+    if (audioQueue)
+        dispatch_sync(audioQueue, ^{
                       });
     stopSender();
     {

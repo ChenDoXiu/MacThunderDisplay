@@ -7,6 +7,7 @@
 #include "ClockSync.hpp"
 #include "UdpBatch.hpp"
 #include "UdpPlacement.hpp"
+#include "AudioPlayer.hpp"
 #include <iomanip>
 #include <SDL3/SDL.h>
 #include <arpa/inet.h>
@@ -71,6 +72,7 @@ class Client {
     std::atomic<bool> running{true}, connected{false}, disconnectedByServer{false};
     std::atomic<int> captureWait{0};
     ClockSync clock;
+    std::unique_ptr<AudioPlayer> audio;
     std::atomic<bool> statsVisible{false};
     std::atomic<double> displayFPS{0}, displayMbps{0};
     std::atomic<uint64_t> generation{0}, ack{0}, receivedBytes{0}, receivedFrames{0},
@@ -152,6 +154,12 @@ class Client {
             hello += ' ' + std::to_string(td::socketPort(fd));
         }
         hello += std::string(" CODEC ") + (request.h264 ? "h264" : "pyrowave");
+        try {
+            audio = std::make_unique<AudioPlayer>(server, clock);
+            hello += " AUDIO1 " + std::to_string(audio->port());
+        } catch (const std::exception &error) {
+            std::cerr << "[Audio] disabled: " << error.what() << '\n';
+        }
         td::setSocketTimeout(socket, 2);
         thread = std::thread([this] {
             receive();
@@ -162,6 +170,7 @@ class Client {
         running = false;
         if (thread.joinable())
             thread.join();
+        audio.reset();
         send("BYE");
         for (int fd : videoSockets)
             td::closeSocket(fd);
@@ -354,6 +363,8 @@ class Client {
             if (n > 0 && peer.sin_addr.s_addr != server.sin_addr.s_addr)
                 continue;
             if (now - lastPacket > 2000000000 && connected.exchange(false)) {
+                if (audio)
+                    audio->setSession(0);
                 std::cerr << "Connection lost\n";
                 reportedDisconnected = true;
                 std::lock_guard<std::mutex> lock(mutex);
@@ -373,6 +384,8 @@ class Client {
                                                            : 0;
                     if (wait) {
                         connected = false;
+                        if (audio)
+                            audio->setSession(0);
                         if (captureWait.exchange(wait) != wait) {
                             std::cerr << "Capture state: " << reason << '\n';
                             frames.clear();
@@ -454,6 +467,15 @@ class Client {
                             continue;
                         }
                         h264 = codecName == "h264";
+                        if (audio) {
+                            std::string audioTag;
+                            int rate = 0, channels = 0, bits = 0, frames = 0;
+                            const bool available =
+                                msg >> audioTag >> rate >> channels >> bits >> frames &&
+                                audioTag == "AUDIO1" && rate == 48000 && channels == 2 &&
+                                bits == 16 && frames == 120;
+                            audio->setSession(available ? s : 0);
+                        }
                         if (videoLanes != lanes) {
                             videoLanes = lanes;
                             std::cerr << "Video lanes active: " << lanes << '\n';
@@ -995,6 +1017,11 @@ class RenderLoop {
                         if (!client.h264)
                             text << "Partial: " << client.partialFrames.load() << " shown / "
                                  << client.partialRejected.load() << " rejected\n";
+                        if (client.audio) {
+                            auto audio = client.audio->statistics();
+                            text << "Audio PCM: queue " << audio.queuedMs << " ms / lost "
+                                 << audio.lost << " / underrun " << audio.underruns << '\n';
+                        }
                         text << (lastCallbackTime ? "Capture callback -> client GPU ready"
                                                   : "Source display -> client GPU ready")
                              << ", not screen scan\nCtrl+Alt+Shift+S  Hide statistics";
