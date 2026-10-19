@@ -1,0 +1,27 @@
+ThunderDisplay third-party notices
+
+PyroWave Metal
+  Upstream: https://github.com/Themaister/pyrowave
+  Base revision: a0d2e71e98b85f6a23f62407df21a39e9745b875
+  Copyright: Hans-Kristian Arntzen
+  License: MIT; see vendor/pyrowave-metal/LICENSE and source notices.
+  The vendored Metal implementation includes ThunderDisplay changes for
+  dirty-region encoding, cached rate control and the extended encoder API.
+  Generated Metal shader source is included for standalone macOS builds.
+
+PyroWave Vulkan (Linux build dependency)
+  Upstream: https://github.com/Themaister/pyrowave
+  Pinned revision: a0d2e71e98b85f6a23f62407df21a39e9745b875
+  License: MIT. Downloaded into vendor/pyrowave by scripts/build-linux.sh;
+  the upstream license is retained in Linux binary packages.
+
+stb_easy_font
+  Upstream: https://github.com/nothings/stb
+  Revision: 2c980bb59875b0d32144a71867fbdebb2f77cd20
+  License: MIT OR Unlicense; see vendor/stb/LICENSE and source notices.
+
+Other system/build dependencies
+  Linux uses Qt, SDL3, FFmpeg, Vulkan and optional Wayland/libsystemd.
+  These libraries and their graphics/media drivers retain their respective
+  licenses. The Linux packaging script collects bundled library licenses.
+  macOS uses Apple system frameworks, which are not redistributed here.

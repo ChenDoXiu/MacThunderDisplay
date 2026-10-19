@@ -1,0 +1,41 @@
+# Only application code, build tooling, artwork and licensed dependencies.
+/*
+!/.gitignore
+!/CMakeLists.txt
+!/LICENSE
+!/THIRD_PARTY_NOTICES
+!/mac/
+!/linux/
+!/common/
+!/assets/
+!/scripts/
+!/vendor/
+
+# Linux dependencies are fetched at pinned revisions by the build script.
+/vendor/*
+!/vendor/pyrowave-metal/
+!/vendor/stb/
+
+# Development notes, experiments, local settings and generated output.
+**/*.md
+**/AGENTS.md
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+**/*.log
+**/*.pair
+**/*.o
+**/*.a
+**/*.so*
+**/*.dylib
+**/*.spv
+**/*.app/
+**/*.zip
+**/*.tar.gz
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.keychain*

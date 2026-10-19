@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>ThunderDisplay</string>
+<key>CFBundleIdentifier</key><string>dev.thunderdisplay.sender</string>
+<key>CFBundleName</key><string>ThunderDisplay</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSScreenCaptureUsageDescription</key><string>将 ThunderDisplay 虚拟显示器串流到你的 Linux 设备。</string>
+<key>NSLocalNetworkUsageDescription</key><string>在局域网中发现并连接 Linux 副屏客户端。</string>
+</dict></plist>
