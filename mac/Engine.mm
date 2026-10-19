@@ -15,6 +15,7 @@
 #include "RealtimeThread.hpp"
 #include "H264Encoder.hpp"
 #include "AudioSender.hpp"
+#include "ProcessAudio.hpp"
 #include "pyrowave_metal.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -78,6 +79,8 @@ struct Connection {
 };
 
 static std::shared_ptr<Connection> connection;
+static std::unique_ptr<ProcessAudio> processAudio;
+static std::atomic<bool> processAudioActive{false};
 static std::atomic<bool> disconnectRequested{false};
 static SCStream *stream;
 static std::atomic<bool> captureReady{false}, captureFailed{false}, captureNativePacing{false};
@@ -1266,7 +1269,8 @@ static void controlLoop(int socket) {
                 << " LANES " << 1 + c->extraUDP.size() << " CODEC "
                 << (useH264 ? "h264" : "pyrowave");
             if (c->audioUDP >= 0)
-                out << " AUDIO1 48000 2 16 120";
+                out << " AUDIO1 48000 2 16 120 CAPTURE "
+                    << (processAudioActive.load() ? "TAP" : "SCK");
             reply(peer, out.str());
             if ((firstConnection || welcomeNeedsFrame) && !patternTimer) {
                 welcomeNeedsFrame = false;
@@ -2614,7 +2618,30 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                              kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
                                          config.showsCursor = !separateCursor;
                                          config.scalesToFit = YES;
-                                         config.capturesAudio = YES;
+                                         if (!processAudio) {
+                                             auto capture = std::make_unique<ProcessAudio>();
+                                             auto sender = std::make_shared<AudioSender>();
+                                             if (capture->start(
+                                                     [sender](
+                                                         const AudioBufferList &pcm,
+                                                         const AudioStreamBasicDescription &format,
+                                                         size_t frames, uint64_t firstNs) {
+                                                         std::shared_ptr<Connection> c;
+                                                         {
+                                                             std::lock_guard<std::mutex> lock(
+                                                                 connectionMutex);
+                                                             c = connection;
+                                                         }
+                                                         if (c && c->audioUDP >= 0)
+                                                             sender->consume(pcm, format, frames,
+                                                                             firstNs, c->audioUDP,
+                                                                             c->session);
+                                                     })) {
+                                                 processAudio = std::move(capture);
+                                                 processAudioActive = true;
+                                             }
+                                         }
+                                         config.capturesAudio = !processAudioActive.load();
                                          config.sampleRate = td::audio::Rate;
                                          config.channelCount = td::audio::Channels;
                                          config.excludesCurrentProcessAudio = YES;
@@ -2632,7 +2659,8 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                              return;
                                          }
                                          stream = newStream;
-                                         if (![newStream addStreamOutput:captureOutput
+                                         if (config.capturesAudio &&
+                                             ![newStream addStreamOutput:captureOutput
                                                                     type:SCStreamOutputTypeAudio
                                                       sampleHandlerQueue:audioQueue
                                                                    error:&err])
@@ -2661,6 +2689,8 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
 static void pauseConfiguredCapture() {
     if (!configured || patternTimer)
         return;
+    processAudioActive = false;
+    processAudio.reset();
     captureReady = false;
     captureFailed = true;
     captureAttemptNs = 0;
@@ -2906,6 +2936,8 @@ static const char *configureDisplay(int width, int height, int retina, double sc
 
 static void stopDisplay() {
     configured = false;
+    processAudioActive = false;
+    processAudio.reset();
     captureReady = false;
     captureFailed = false;
     captureAttemptNs = 0;

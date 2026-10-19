@@ -15,7 +15,7 @@ swiftc -target "$(uname -m)-apple-macosx14.0" -O -parse-as-library mac/App.swift
   -L build/mac -ltd-engine -ltd-common -L build/mac/vendor/pyrowave-metal -lpyrowave-metal \
   -Xlinker -lc++ \
   -framework VideoToolbox -framework Cocoa -framework SwiftUI -framework ScreenCaptureKit -framework CoreMedia \
-  -framework CoreVideo -framework Metal -framework MetalPerformanceShaders -framework IOSurface -framework Carbon -framework IOKit -framework ServiceManagement \
+  -framework CoreVideo -framework CoreAudio -framework Metal -framework MetalPerformanceShaders -framework IOSurface -framework Carbon -framework IOKit -framework ServiceManagement \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP/Contents/MacOS/ThunderDisplay"
 python3 scripts/sign-mac.py "$APP"

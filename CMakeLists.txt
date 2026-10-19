@@ -16,7 +16,8 @@ target_link_libraries(td-common PUBLIC Threads::Threads)
 if(APPLE)
   enable_language(OBJCXX)
   add_subdirectory(vendor/pyrowave-metal)
-  add_library(td-engine STATIC mac/Engine.mm mac/H264Encoder.mm mac/AudioSender.mm)
+  add_library(td-engine STATIC mac/Engine.mm mac/H264Encoder.mm mac/AudioSender.mm
+                               mac/ProcessAudio.mm)
   target_compile_options(td-engine PRIVATE -fobjc-arc)
   target_include_directories(td-engine PRIVATE vendor/pyrowave-metal)
   target_link_libraries(
@@ -27,6 +28,7 @@ if(APPLE)
            "-framework Cocoa"
            "-framework ScreenCaptureKit"
            "-framework CoreMedia"
+           "-framework CoreAudio"
            "-framework CoreVideo"
            "-framework Metal"
            "-framework MetalPerformanceShaders"

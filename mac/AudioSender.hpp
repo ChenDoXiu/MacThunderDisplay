@@ -1,6 +1,7 @@
 #pragma once
 #include "Audio.hpp"
 #include <CoreMedia/CoreMedia.h>
+#include <CoreAudio/CoreAudioTypes.h>
 
 // Confined to the serial audio capture queue, independent of video encoding.
 class AudioSender {
@@ -12,4 +13,6 @@ class AudioSender {
 
   public:
     void consume(CMSampleBufferRef sample, int socket, uint64_t sessionID);
+    void consume(const AudioBufferList &buffers, const AudioStreamBasicDescription &format,
+                 size_t frames, uint64_t firstNs, int socket, uint64_t sessionID);
 };

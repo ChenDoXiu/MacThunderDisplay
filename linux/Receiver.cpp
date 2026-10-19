@@ -474,7 +474,10 @@ class Client {
                                 msg >> audioTag >> rate >> channels >> bits >> frames &&
                                 audioTag == "AUDIO1" && rate == 48000 && channels == 2 &&
                                 bits == 16 && frames == 120;
-                            audio->setSession(available ? s : 0);
+                            std::string captureTag, captureMode;
+                            const bool tap = available && msg >> captureTag >> captureMode &&
+                                             captureTag == "CAPTURE" && captureMode == "TAP";
+                            audio->setSession(available ? s : 0, tap);
                         }
                         if (videoLanes != lanes) {
                             videoLanes = lanes;

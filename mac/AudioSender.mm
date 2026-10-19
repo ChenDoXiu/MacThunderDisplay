@@ -46,6 +46,26 @@ void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t session
         return;
     }
     const uint64_t now = td::nowNs();
+    uint64_t firstNs =
+        now > count * 1000000000ULL / Rate ? now - count * 1000000000ULL / Rate : now;
+    CMTime delta = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),
+                                  CMSampleBufferGetPresentationTimeStamp(sample));
+    double age = CMTimeGetSeconds(delta);
+    if (std::isfinite(age) && age >= 0 && age < 1 && uint64_t(age * 1e9) < now)
+        firstNs = now - uint64_t(age * 1e9);
+    consume(*list, *format, count, firstNs, socket, sessionID);
+    if (retained)
+        CFRelease(retained);
+}
+
+void AudioSender::consume(const AudioBufferList &buffers, const AudioStreamBasicDescription &asbd,
+                          size_t count, uint64_t firstNs, int socket, uint64_t sessionID) {
+    using namespace td::audio;
+    const auto *format = &asbd;
+    const auto *list = &buffers;
+    const bool floating = (format->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const bool planar = (format->mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+    const uint64_t now = td::nowNs();
     if (session != sessionID || (lastCallback && now - lastCallback > 100000000)) {
         session = sessionID;
         filled = 0;
@@ -54,13 +74,6 @@ void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t session
     lastCallback = now;
     if (!reportAt)
         reportAt = now;
-    uint64_t firstNs =
-        now > count * 1000000000ULL / Rate ? now - count * 1000000000ULL / Rate : now;
-    CMTime delta = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),
-                                  CMSampleBufferGetPresentationTimeStamp(sample));
-    double age = CMTimeGetSeconds(delta);
-    if (std::isfinite(age) && age >= 0 && age < 1 && uint64_t(age * 1e9) < now)
-        firstNs = now - uint64_t(age * 1e9);
     callbacks++;
     largestCallback = std::max(largestCallback, unsigned(count));
     for (size_t i = 0; i < count; ++i) {
@@ -96,8 +109,6 @@ void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t session
             filled = 0;
         }
     }
-    if (retained)
-        CFRelease(retained);
     if (now - reportAt >= 1000000000) {
         fprintf(
             stderr,

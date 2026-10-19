@@ -11,5 +11,6 @@
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSScreenCaptureUsageDescription</key><string>将 ThunderDisplay 虚拟显示器串流到你的 Linux 设备。</string>
+<key>NSAudioCaptureUsageDescription</key><string>将 Mac 系统声音低延迟传输到你的 Linux 副屏。</string>
 <key>NSLocalNetworkUsageDescription</key><string>在局域网中发现并连接 Linux 副屏客户端。</string>
 </dict></plist>

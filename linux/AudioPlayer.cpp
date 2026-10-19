@@ -23,6 +23,8 @@ struct AudioPlayer::Impl {
     SDL_AudioStream *stream = nullptr;
     std::thread thread;
     std::atomic<bool> active{true};
+    std::atomic<bool> lowLatency{false};
+    std::atomic<bool> playbackStarted{false};
     std::atomic<uint64_t> session{0}, packets{0}, lost{0}, underruns{0}, resets{0};
     std::atomic<double> queuedMs{0}, receiveMs{0};
 
@@ -32,8 +34,14 @@ struct AudioPlayer::Impl {
             if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
                 throw std::runtime_error(SDL_GetError());
             SDL_AudioSpec input{SDL_AUDIO_S16LE, td::audio::Channels, td::audio::Rate};
-            stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &input, nullptr,
-                                               nullptr);
+            stream = SDL_OpenAudioDeviceStream(
+                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &input,
+                [](void *context, SDL_AudioStream *, int additionalBytes, int) {
+                    auto &self = *static_cast<Impl *>(context);
+                    if (additionalBytes > 0 && self.playbackStarted.load(std::memory_order_relaxed))
+                        self.underruns.fetch_add(1, std::memory_order_relaxed);
+                },
+                this);
             if (!stream)
                 throw std::runtime_error(SDL_GetError());
             socket = td::bindUdp();
@@ -42,7 +50,7 @@ struct AudioPlayer::Impl {
             SDL_AudioSpec output{};
             int period = 0;
             SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &output, &period);
-            std::cerr << "[Audio] PCM 48000Hz stereo S16LE packet_ms=2.5 prime_ms=30 backend="
+            std::cerr << "[Audio] PCM 48000Hz stereo S16LE packet_ms=2.5 backend="
                       << SDL_GetCurrentAudioDriver() << " device_rate=" << output.freq
                       << " device_period_frames=" << period << '\n';
             thread = std::thread([this] {
@@ -69,18 +77,18 @@ struct AudioPlayer::Impl {
         pthread_setname_np(pthread_self(), "td-audio");
         std::map<uint64_t, Packet> pending;
         uint64_t currentSession = 0, next = 0, lastPacket = 0, gapAt = 0;
-        uint64_t reportAt = td::nowNs(), lastPackets = 0, lastFeed = 0;
+        uint64_t reportAt = td::nowNs(), lastPackets = 0;
         uint64_t lastCapture = 0, lastRateAt = 0;
         double playoutMs = 0;
         float playbackRatio = 1.f;
         bool playing = false;
         std::array<uint8_t, PayloadSize> silence{};
         auto reset = [&] {
+            playbackStarted = false;
             SDL_PauseAudioStreamDevice(stream);
             SDL_ClearAudioStream(stream);
             pending.clear();
             next = gapAt = 0;
-            lastFeed = 0;
             lastCapture = lastRateAt = 0;
             playoutMs = 0;
             playbackRatio = 1.f;
@@ -95,19 +103,16 @@ struct AudioPlayer::Impl {
                 queued = 0;
                 resets++;
             }
-            const uint64_t now = td::nowNs();
-            // SDL can already have converted data in its device buffer when the
-            // input queue reaches zero. Do not pause/re-prime on every capture burst.
-            if (playing && queued == 0 && lastFeed && now - lastFeed > 20000000)
-                underruns++;
-            lastFeed = now;
             if (!SDL_PutAudioStreamData(stream, pcm, PayloadSize))
                 return;
             queued += PayloadSize;
             queuedMs = double(queued) * 1000 / BytesPerSecond;
-            if (!playing && queued >= int(BytesPerSecond * 30 / 1000)) {
-                SDL_ResumeAudioStreamDevice(stream);
-                playing = true;
+            const unsigned primeMs = lowLatency.load() ? 8 : 30;
+            if (!playing && queued >= int(BytesPerSecond * primeMs / 1000)) {
+                playbackStarted = true;
+                playing = SDL_ResumeAudioStreamDevice(stream);
+                if (!playing)
+                    playbackStarted = false;
             }
         };
         while (active) {
@@ -201,7 +206,9 @@ struct AudioPlayer::Impl {
                         playoutMs = playoutMs ? .8 * playoutMs + .2 * delay : delay;
                         // Correct clock drift and excess latency gently. Updating
                         // once per 250 ms avoids chasing each individual packet.
-                        playbackRatio = float(1 + std::clamp((playoutMs - 55) / 4000, -.005, .005));
+                        double targetMs = lowLatency.load() ? 16 : 55;
+                        playbackRatio =
+                            float(1 + std::clamp((playoutMs - targetMs) / 4000, -.005, .005));
                         SDL_SetAudioStreamFrequencyRatio(stream, playbackRatio);
                     }
                 }
@@ -238,7 +245,8 @@ uint16_t AudioPlayer::port() const {
     return td::socketPort(impl->socket);
 }
 
-void AudioPlayer::setSession(uint64_t session) {
+void AudioPlayer::setSession(uint64_t session, bool lowLatency) {
+    impl->lowLatency = lowLatency;
     impl->session = session;
 }
 

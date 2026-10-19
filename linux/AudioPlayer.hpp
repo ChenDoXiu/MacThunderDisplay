@@ -18,6 +18,6 @@ class AudioPlayer {
     AudioPlayer(const sockaddr_in &server, ClockSync &clock);
     ~AudioPlayer();
     uint16_t port() const;
-    void setSession(uint64_t session);
+    void setSession(uint64_t session, bool lowLatency = false);
     Statistics statistics() const;
 };
