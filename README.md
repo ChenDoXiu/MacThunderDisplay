@@ -10,7 +10,7 @@ The Mac sender creates a virtual display, captures its contents, and encodes the
 
 - **Virtual extended display:** Extend your Mac desktop with a custom output resolution, 1× / 2× scaling, and fractional scaling.
 - **Two codecs:** PyroWave GPU encoding and decoding, or hardware H.264 encoding through macOS VideoToolbox. The Linux H.264 decoder prefers VAAPI hardware acceleration.
-- **Image quality and performance:** Lanczos scaling on the Mac, dirty-region encoding for PyroWave, and separate cursor transmission and rendering.
+- **Image quality and performance:** Lanczos scaling on the Mac, dirty-region encoding for PyroWave, separate cursor rendering, and partial-frame recovery under packet loss when enough data is available.
 - **Keyboard and mouse control:** Keyboard shortcut capture, movement across display boundaries, relative mouse input for games, and configurable release-control and fullscreen shortcuts.
 - **Connection and status:** LAN discovery, manual address entry, a client performance overlay, a Mac menu bar interface, and launch at login.
 

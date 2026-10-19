@@ -968,7 +968,7 @@ struct VulkanView::Impl {
     }
 
     bool show(int w, int h, int c, const std::vector<std::vector<uint8_t>> &units,
-              bool decode = true, const YuvFrame *upload = nullptr) {
+              bool decode = true, const YuvFrame *upload = nullptr, bool allowPartial = false) {
         if (!decode && !imagesUsed)
             return false;
         timing = {};
@@ -991,12 +991,19 @@ struct VulkanView::Impl {
                     if (!u.empty() && pyrowave_decoder_push_packet(decoder, u.data(), u.size()) !=
                                           PYROWAVE_SUCCESS)
                         return false;
-                if (!pyrowave_decoder_decode_is_ready(decoder, false)) {
+                const bool complete = pyrowave_decoder_decode_is_ready(decoder, false);
+                // The upstream partial-frame gate requires pristine low-frequency
+                // bands and more than 90% of coefficient blocks. Missing detail
+                // coefficients are reconstructed as zero, rather than fabricated bytes.
+                if (!complete &&
+                    (!allowPartial || !pyrowave_decoder_decode_is_ready(decoder, true))) {
                     static int reports = 0;
                     if (reports++ < 8)
-                        std::cerr << "Decode waiting: complete frame required\n";
+                        std::cerr << "Decode waiting: insufficient PyroWave data (partial="
+                                  << allowPartial << ")\n";
                     return false;
                 }
+                timing.partial = !complete;
             }
         }
         bool uploadCursor = !cursorUploaded || uploadedCursorImage != cursor.image;
@@ -1286,8 +1293,9 @@ VulkanView::VulkanView(SDL_Window *w) : impl(std::make_unique<Impl>(w)) {
 
 VulkanView::~VulkanView() = default;
 
-bool VulkanView::show(int w, int h, int c, const std::vector<std::vector<uint8_t>> &u) {
-    return impl->show(w, h, c, u);
+bool VulkanView::show(int w, int h, int c, const std::vector<std::vector<uint8_t>> &u,
+                      bool allowPartial) {
+    return impl->show(w, h, c, u, true, nullptr, allowPartial);
 }
 
 void VulkanView::resize() {

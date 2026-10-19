@@ -57,7 +57,7 @@ struct Frame {
 struct ReadyFrame {
     int width, height, chroma;
     uint64_t id, firstNs, readyNs, generation, session, captureNs;
-    bool timed = false, callbackTime = false, h264 = false, key = false;
+    bool timed = false, callbackTime = false, h264 = false, key = false, partial = false;
     std::vector<std::vector<uint8_t>> units;
 };
 
@@ -78,6 +78,8 @@ class Client {
     std::atomic<uint64_t> assemblyDrops{0}, queueDrops{0}, displayDrops{0}, incompleteFrames{0},
         refreshRequests{0};
     std::atomic<uint64_t> socketDrops{0};
+    std::atomic<uint64_t> partialFrames{0}, partialRejected{0};
+    std::atomic<bool> pyrowaveRecovery{false};
     std::atomic<int> chroma{1};
     std::atomic<bool> h264{false}, h264Recovery{false};
     const bool requestedH264;
@@ -410,6 +412,7 @@ class Client {
                                 this->ready.notify_one();
                             }
                             h264Recovery = false;
+                            pyrowaveRecovery = false;
                             cursorSequence = 0;
                             remoteCursorDrawn = true;
                             assemblingCursor = 0;
@@ -733,8 +736,8 @@ class Client {
             // waiting for the rest of that batch or for the socket queue to drain.
             if (n > 0 && !completedVideo && !receiver.batchFinished())
                 continue;
-            // Drain queued datagrams before expiring a frame. Never display missing
-            // detail bands as a blurry reconstruction; keep the previous sharp image.
+            // Give complete frames priority. Once a PyroWave frame expires, let the
+            // decoder decide whether its complete packets can reconstruct a usable image.
             std::unique_ptr<ReadyFrame> ready;
             std::deque<std::unique_ptr<ReadyFrame>> ordered;
             uint64_t newest = 0;
@@ -745,13 +748,18 @@ class Client {
                     (f.header.flags & td::FrameKeyframe)
                         ? 100000000
                         : std::max<uint64_t>(25000000, 1500000000 / std::max(10, fps.load()));
-                if (!full && (n > 0 || now - f.firstNs < deadline)) {
+                const bool isH264 = (f.header.flags & td::FrameH264) != 0;
+                if (!full && (now - f.firstNs < deadline || (isH264 && n > 0))) {
                     if (h264)
                         break;
                     ++it;
                     continue;
                 }
-                if (full && it->first > newest) {
+                // Unit zero contains the PyroWave sequence header. Never feed a torn
+                // packet: the unwritten bytes in a fragmented unit are not valid data.
+                bool recoverable = !isH264 && !f.units.empty() && f.units[0].done;
+                if ((full || recoverable) && it->first > newest &&
+                    (full || !ready || ready->partial)) {
                     auto r = std::make_unique<ReadyFrame>();
                     r->width = f.header.width;
                     r->height = f.header.height;
@@ -762,13 +770,15 @@ class Client {
                     r->generation = generation;
                     r->h264 = (f.header.flags & td::FrameH264) != 0;
                     r->key = (f.header.flags & td::FrameKeyframe) != 0;
+                    r->partial = !full;
                     r->session = f.header.session;
                     r->captureNs = f.header.captureNs;
                     r->timed = (f.header.flags & td::FrameTimeValid) != 0;
                     r->callbackTime = (f.header.flags & td::FrameCallbackTime) != 0;
                     r->units.resize(f.units.size());
                     for (size_t i = 0; i < f.units.size(); i++)
-                        r->units[i] = std::move(f.units[i].data);
+                        if (f.units[i].done)
+                            r->units[i] = std::move(f.units[i].data);
                     newest = it->first;
                     if (h264)
                         ordered.push_back(std::move(r));
@@ -810,8 +820,9 @@ class Client {
             }
             if (ready) {
                 delivered = ready->id;
-                lastComplete = now;
-                needsRefresh = false;
+                if (!ready->partial)
+                    lastComplete = now;
+                needsRefresh = ready->partial;
                 for (auto it = frames.begin(); it != frames.end() && it->first <= delivered;) {
                     assemblyDrops++;
                     expiredFrames++;
@@ -822,18 +833,26 @@ class Client {
                     it = frames.erase(it);
                 }
                 std::lock_guard<std::mutex> lock(mutex);
-                if (latest) {
+                if (latest && !latest->partial && ready->partial) {
+                    // A partial update must not evict a complete image already waiting
+                    // for the renderer. Keep requesting a clean refresh if needed.
                     queueDrops++;
                     expiredFrames++;
+                } else {
+                    if (latest) {
+                        queueDrops++;
+                        expiredFrames++;
+                    }
+                    latest = std::move(ready);
+                    receivedFrames++;
+                    this->ready.notify_one();
                 }
-                latest = std::move(ready);
-                receivedFrames++;
-                this->ready.notify_one();
             }
             // The last desktop update may be lost just before SCK goes idle. Request
             // its cached image after a gap instead of resending on every dropped frame.
-            if ((needsRefresh || (h264 && (h264Recovery || !delivered))) && connected &&
-                now - lastComplete >= 100000000 && now - lastRefresh >= 100000000) {
+            if ((needsRefresh || (!h264 && pyrowaveRecovery) ||
+                 (h264 && (h264Recovery || !delivered))) &&
+                connected && now - lastComplete >= 100000000 && now - lastRefresh >= 100000000) {
                 send("REFRESH");
                 lastRefresh = now;
                 refreshRequests++;
@@ -973,6 +992,9 @@ class RenderLoop {
                         text << "Dropped: " << client.expiredFrames.load()
                              << "   incomplete: " << client.incompleteFrames.load()
                              << "   socket: " << client.socketDrops.load() << '\n';
+                        if (!client.h264)
+                            text << "Partial: " << client.partialFrames.load() << " shown / "
+                                 << client.partialRejected.load() << " rejected\n";
                         text << (lastCallbackTime ? "Capture callback -> client GPU ready"
                                                   : "Source display -> client GPU ready")
                              << ", not screen scan\nCtrl+Alt+Shift+S  Hide statistics";
@@ -1046,8 +1068,21 @@ class RenderLoop {
                     client.h264Recovery = false;
                     h264DecodeMs = (td::nowNs() - decodeBegan) / 1e6;
                     shown = view.showYuv(decodedYuv);
-                } else
-                    shown = view.show(frame->width, frame->height, frame->chroma, frame->units);
+                } else {
+                    shown = view.show(frame->width, frame->height, frame->chroma, frame->units,
+                                      frame->partial);
+                    if (frame->generation == client.generation) {
+                        if (shown) {
+                            client.pyrowaveRecovery = view.timings().partial;
+                            if (view.timings().partial)
+                                client.partialFrames++;
+                        } else {
+                            client.pyrowaveRecovery = true;
+                            if (frame->partial)
+                                client.partialRejected++;
+                        }
+                    }
+                }
                 collect(false);
                 if (shown) {
                     drawn++;
@@ -1649,6 +1684,8 @@ int runReceiver(const std::string &host, bool fullscreen, const DisplayRequest &
                           << " queue=" << client.queueDrops.load()
                           << " display=" << client.displayDrops.load()
                           << ") incomplete_drop=" << client.incompleteFrames.load()
+                          << " partial_shown=" << client.partialFrames.load()
+                          << " partial_rejected=" << client.partialRejected.load()
                           << " refresh=" << client.refreshRequests.load()
                           << " cursor_draws=" << renderer.cursorDrawn.load()
                           << " input_loop_max_ms=" << inputLoopMax << '\n';

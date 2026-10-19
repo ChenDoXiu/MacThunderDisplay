@@ -16,6 +16,7 @@ class VulkanView {
         double fence = 0, feed = 0, acquire = 0, record = 0, presentCPU = 0, decodeGPU = 0,
                presentGPU = 0;
         bool gpuValid = false;
+        bool partial = false;
     };
 
     struct Completion {
@@ -26,7 +27,8 @@ class VulkanView {
 
     explicit VulkanView(SDL_Window *window);
     ~VulkanView();
-    bool show(int width, int height, int chroma, const std::vector<std::vector<uint8_t>> &units);
+    bool show(int width, int height, int chroma, const std::vector<std::vector<uint8_t>> &units,
+              bool allowPartial = false);
     bool showYuv(const YuvFrame &image);
     void setCursor(const td::CursorState &cursor);
     bool redraw();
