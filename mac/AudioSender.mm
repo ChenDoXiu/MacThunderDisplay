@@ -6,7 +6,8 @@
 #include <cstdio>
 #include <sys/socket.h>
 
-void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t sessionID) {
+void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t sessionID,
+                          unsigned frames) {
     using namespace td::audio;
     if (!CMSampleBufferDataIsReady(sample))
         return;
@@ -53,21 +54,26 @@ void AudioSender::consume(CMSampleBufferRef sample, int socket, uint64_t session
     double age = CMTimeGetSeconds(delta);
     if (std::isfinite(age) && age >= 0 && age < 1 && uint64_t(age * 1e9) < now)
         firstNs = now - uint64_t(age * 1e9);
-    consume(*list, *format, count, firstNs, socket, sessionID);
+    consume(*list, *format, count, firstNs, socket, sessionID, frames);
     if (retained)
         CFRelease(retained);
 }
 
 void AudioSender::consume(const AudioBufferList &buffers, const AudioStreamBasicDescription &asbd,
-                          size_t count, uint64_t firstNs, int socket, uint64_t sessionID) {
+                          size_t count, uint64_t firstNs, int socket, uint64_t sessionID,
+                          unsigned requestedFrames) {
     using namespace td::audio;
     const auto *format = &asbd;
     const auto *list = &buffers;
     const bool floating = (format->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
     const bool planar = (format->mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
     const uint64_t now = td::nowNs();
-    if (session != sessionID || (lastCallback && now - lastCallback > 100000000)) {
+    if (!supportedFrames(requestedFrames))
+        return;
+    if (session != sessionID || packetFrames != requestedFrames ||
+        (lastCallback && now - lastCallback > 100000000)) {
         session = sessionID;
+        packetFrames = requestedFrames;
         filled = 0;
         sequence = samples = 0;
     }
@@ -99,10 +105,11 @@ void AudioSender::consume(const AudioBufferList &buffers, const AudioStreamBasic
         }
         filled++;
         samples++;
-        if (filled == Frames) {
-            encode(packet.data(), {session, ++sequence, packetTime, samples - Frames});
-            if (::send(socket, packet.data(), packet.size(), MSG_DONTWAIT) ==
-                ssize_t(packet.size()))
+        if (filled == packetFrames) {
+            encode(packet.data(),
+                   {session, ++sequence, packetTime, samples - packetFrames, packetFrames});
+            size_t bytes = packetSize(packetFrames);
+            if (::send(socket, packet.data(), bytes, MSG_DONTWAIT) == ssize_t(bytes))
                 sent++;
             else
                 dropped++;
@@ -112,9 +119,9 @@ void AudioSender::consume(const AudioBufferList &buffers, const AudioStreamBasic
     if (now - reportAt >= 1000000000) {
         fprintf(
             stderr,
-            "[AudioSend] PCM 48000Hz stereo S16LE packet_ms=2.5 packets=%llu dropped=%llu callbacks=%llu largest_callback_frames=%u peak=%.3f\n",
-            (unsigned long long)sent, (unsigned long long)dropped, (unsigned long long)callbacks,
-            largestCallback, peak);
+            "[AudioSend] PCM 48000Hz stereo S16LE packet_frames=%u packet_ms=%.3f packets=%llu dropped=%llu callbacks=%llu largest_callback_frames=%u peak=%.3f\n",
+            packetFrames, double(packetFrames) * 1000 / Rate, (unsigned long long)sent,
+            (unsigned long long)dropped, (unsigned long long)callbacks, largestCallback, peak);
         sent = dropped = callbacks = 0;
         largestCallback = 0;
         peak = 0;

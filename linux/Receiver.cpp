@@ -8,6 +8,7 @@
 #include "UdpBatch.hpp"
 #include "UdpPlacement.hpp"
 #include "AudioPlayer.hpp"
+#include "Audio.hpp"
 #include <iomanip>
 #include <SDL3/SDL.h>
 #include <arpa/inet.h>
@@ -159,8 +160,8 @@ class Client {
             try {
                 audio = std::make_unique<AudioPlayer>(server, clock, request.audioBufferMs);
                 hello += " AUDIO1 " + std::to_string(audio->port());
-                if (request.muteMacAudio)
-                    hello += " MUTE1 1";
+                hello += std::string(" MUTE1 ") + (request.muteMacAudio ? "1" : "0");
+                hello += " AFRAMES1 " + std::to_string(td::audio::Frames);
             } catch (const std::exception &error) {
                 std::cerr << "[Audio] disabled: " << error.what() << '\n';
             }
@@ -478,7 +479,7 @@ class Client {
                             const bool available =
                                 msg >> audioTag >> rate >> channels >> bits >> frames &&
                                 audioTag == "AUDIO1" && rate == 48000 && channels == 2 &&
-                                bits == 16 && frames == 120;
+                                bits == 16 && td::audio::supportedFrames(frames);
                             std::string captureTag, captureMode;
                             const bool tap = available && msg >> captureTag >> captureMode &&
                                              captureTag == "CAPTURE" && captureMode == "TAP";
@@ -488,7 +489,8 @@ class Client {
                                                     mutedTag == "MUTED" && muted == 1;
                             if (requestedMuteMac && !localMuted)
                                 std::cerr << "Audio warning: Mac local mute unavailable\n";
-                            audio->setSession(available ? s : 0, tap);
+                            audio->setSession(available ? s : 0, tap,
+                                              available ? frames : td::audio::LegacyFrames);
                         }
                         if (videoLanes != lanes) {
                             videoLanes = lanes;
@@ -635,6 +637,18 @@ class Client {
                         }
                     }
                 } else if (n >= 6 && n < 512 && memcmp(buffer, "ERROR ", 6) == 0) {
+                    // Older senders reject trailing audio capabilities. Retry
+                    // their original request once, retaining audio and mute.
+                    const auto capability = hello.find(" AFRAMES1 ");
+                    if (peer.sin_port == server.sin_port && audio && !connected &&
+                        capability != std::string::npos &&
+                        std::string(reinterpret_cast<char *>(buffer), n) ==
+                            "ERROR Invalid audio options") {
+                        hello.erase(capability);
+                        std::cerr << "[Audio] legacy sender; retrying 120-frame packets\n";
+                        send(hello);
+                        continue;
+                    }
                     std::cerr << "Mac: " << std::string(reinterpret_cast<char *>(buffer) + 6, n - 6)
                               << '\n';
                 } else {

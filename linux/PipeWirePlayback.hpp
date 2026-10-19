@@ -15,7 +15,7 @@ class PipeWirePlayback {
         unsigned periodFrames = 0;
     };
 
-    PipeWirePlayback();
+    explicit PipeWirePlayback(unsigned periodFrames = 128);
     ~PipeWirePlayback();
     bool put(const uint8_t *pcm, size_t frames, uint64_t captureNs);
     int queuedBytes() const;

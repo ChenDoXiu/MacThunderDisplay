@@ -66,6 +66,7 @@ struct Connection {
     uint64_t session = 0;
     int udp = -1;
     int audioUDP = -1;
+    unsigned audioFrames = td::audio::LegacyFrames;
     std::mutex udpSendMutex;
     std::vector<int> extraUDP;
     size_t nextLane = 0;
@@ -1083,9 +1084,17 @@ static void controlLoop(int socket) {
             }
             int muteMacAudio = 0;
             if (request >> option) {
-                std::string extra;
                 if (!audioPort || option != "MUTE1" || !(request >> muteMacAudio) ||
-                    (muteMacAudio != 0 && muteMacAudio != 1) || (request >> extra)) {
+                    (muteMacAudio != 0 && muteMacAudio != 1)) {
+                    reply(peer, "ERROR Invalid audio options");
+                    continue;
+                }
+            }
+            unsigned audioFrames = td::audio::LegacyFrames;
+            if (request >> option) {
+                std::string extra;
+                if (!audioPort || option != "AFRAMES1" || !(request >> audioFrames) ||
+                    !td::audio::supportedFrames(audioFrames) || (request >> extra)) {
                     reply(peer, "ERROR Invalid audio options");
                     continue;
                 }
@@ -1215,6 +1224,7 @@ static void controlLoop(int socket) {
                 input.reset();
                 c = std::make_shared<Connection>();
                 c->session = td::random64();
+                c->audioFrames = audioFrames;
                 c->peer = peer;
                 c->udp = td::bindUdp();
                 if (::connect(c->udp, reinterpret_cast<const sockaddr *>(&peer), sizeof(peer)) <
@@ -1279,7 +1289,7 @@ static void controlLoop(int socket) {
                 << " LANES " << 1 + c->extraUDP.size() << " CODEC "
                 << (useH264 ? "h264" : "pyrowave");
             if (c->audioUDP >= 0)
-                out << " AUDIO1 48000 2 16 120 CAPTURE "
+                out << " AUDIO1 48000 2 16 " << c->audioFrames << " CAPTURE "
                     << (processAudioActive.load() ? "TAP" : "SCK") << " MUTED "
                     << (processAudioActive.load() && muteMacAudio ? 1 : 0);
             reply(peer, out.str());
@@ -2328,7 +2338,7 @@ struct CaptureCadence {
             c = connection;
         }
         if (c && c->audioUDP >= 0)
-            audioSender.consume(sample, c->audioUDP, c->session);
+            audioSender.consume(sample, c->audioUDP, c->session, c->audioFrames);
         return;
     }
     if (type != SCStreamOutputTypeScreen)
@@ -2646,7 +2656,8 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                                          if (c && c->audioUDP >= 0)
                                                              sender->consume(pcm, format, frames,
                                                                              firstNs, c->audioUDP,
-                                                                             c->session);
+                                                                             c->session,
+                                                                             c->audioFrames);
                                                      },
                                                      audioMuteRequested)) {
                                                  processAudio = std::move(capture);

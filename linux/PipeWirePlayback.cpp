@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #ifdef TD_HAVE_PIPEWIRE
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
@@ -31,8 +32,10 @@ struct PipeWirePlayback::Impl {
     bool loopStarted = false;
     std::array<int16_t, 2> lastSample{};
     bool recovering = false;
+    const unsigned requestedPeriod;
 
-    Impl() {
+    explicit Impl(unsigned frames) : requestedPeriod(frames == 64 ? 64 : 128) {
+        periodFrames = requestedPeriod;
         pw_init(nullptr, nullptr);
         try {
             loop = pw_thread_loop_new("td-audio-pw", nullptr);
@@ -45,10 +48,11 @@ struct PipeWirePlayback::Impl {
             events.process = [](void *data) {
                 static_cast<Impl *>(data)->process();
             };
+            const std::string latency = std::to_string(requestedPeriod) + "/48000";
             auto *properties = pw_properties_new(
                 PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE,
                 "Game", PW_KEY_NODE_NAME, "thunderdisplay-audio", PW_KEY_APP_NAME, "ThunderDisplay",
-                PW_KEY_NODE_LATENCY, "128/48000", PW_KEY_NODE_RATE, "1/48000", nullptr);
+                PW_KEY_NODE_LATENCY, latency.c_str(), PW_KEY_NODE_RATE, "1/48000", nullptr);
             stream = pw_stream_new_simple(pw_thread_loop_get_loop(loop), "ThunderDisplay PCM",
                                           properties, &events, this);
             if (!stream)
@@ -71,8 +75,8 @@ struct PipeWirePlayback::Impl {
                     &builder, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
                     SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 2, 4),
                     SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1), SPA_PARAM_BUFFERS_size,
-                    SPA_POD_CHOICE_RANGE_Int(4096, 512, 32768), SPA_PARAM_BUFFERS_stride,
-                    SPA_POD_Int(Stride)))};
+                    SPA_POD_CHOICE_RANGE_Int(4096, int(requestedPeriod * Stride), 32768),
+                    SPA_PARAM_BUFFERS_stride, SPA_POD_Int(Stride)))};
             int result = pw_stream_connect(
                 stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
                 pw_stream_flags(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
@@ -136,7 +140,8 @@ struct PipeWirePlayback::Impl {
         }
         auto &data = raw->datas[0];
         size_t frames = data.maxsize / Stride;
-        frames = std::min(frames, buffer->requested ? size_t(buffer->requested) : size_t(128));
+        frames = std::min(frames,
+                          buffer->requested ? size_t(buffer->requested) : size_t(requestedPeriod));
         periodFrames = unsigned(frames);
         auto *out = static_cast<int16_t *>(data.data);
         uint64_t r = std::max(read.load(std::memory_order_relaxed),
@@ -199,7 +204,8 @@ struct PipeWirePlayback::Impl {
     }
 };
 
-PipeWirePlayback::PipeWirePlayback() : impl(std::make_unique<Impl>()) {
+PipeWirePlayback::PipeWirePlayback(unsigned periodFrames)
+    : impl(std::make_unique<Impl>(periodFrames)) {
 }
 
 PipeWirePlayback::~PipeWirePlayback() = default;
@@ -276,7 +282,7 @@ PipeWirePlayback::Timing PipeWirePlayback::timing() const {
 #else
 struct PipeWirePlayback::Impl {};
 
-PipeWirePlayback::PipeWirePlayback() {
+PipeWirePlayback::PipeWirePlayback(unsigned) {
     throw std::runtime_error("native PipeWire not built");
 }
 

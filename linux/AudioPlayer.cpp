@@ -30,6 +30,7 @@ struct AudioPlayer::Impl {
     std::atomic<bool> active{true};
     std::atomic<bool> lowLatency{false};
     std::atomic<bool> playbackStarted{false};
+    std::atomic<unsigned> packetFrames{td::audio::LegacyFrames};
     std::atomic<uint64_t> session{0}, packets{0}, lost{0}, underruns{0}, resets{0};
     std::atomic<double> queuedMs{0}, receiveMs{0}, softwareMs{0}, estimatedMs{-1}, outputMs{0};
 
@@ -39,9 +40,10 @@ struct AudioPlayer::Impl {
             const char *backend = std::getenv("THUNDERDISPLAY_AUDIO_BACKEND");
             if (!backend || strcmp(backend, "sdl")) {
                 try {
-                    native = std::make_unique<PipeWirePlayback>();
-                    std::cerr
-                        << "[Audio] backend=pipewire-native requested_period_frames=128 rt_process=1\n";
+                    unsigned period = bufferMs > 0 && bufferMs <= 8 ? 64 : 128;
+                    native = std::make_unique<PipeWirePlayback>(period);
+                    std::cerr << "[Audio] backend=pipewire-native requested_period_frames="
+                              << period << " rt_process=1\n";
                 } catch (const std::exception &error) {
                     std::cerr << "[Audio] native fallback: " << error.what() << '\n';
                 }
@@ -65,7 +67,7 @@ struct AudioPlayer::Impl {
                 SDL_AudioSpec output{};
                 int period = 0;
                 SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &output, &period);
-                std::cerr << "[Audio] PCM 48000Hz stereo S16LE packet_ms=2.5 backend="
+                std::cerr << "[Audio] PCM 48000Hz stereo S16LE backend="
                           << SDL_GetCurrentAudioDriver() << " device_rate=" << output.freq
                           << " device_period_frames=" << period << '\n';
             }
@@ -139,6 +141,8 @@ struct AudioPlayer::Impl {
         double playoutMs = 0;
         float playbackRatio = 1.f;
         bool playing = false;
+        unsigned frames = LegacyFrames;
+        size_t payloadBytes = frames * Channels * sizeof(int16_t);
         std::array<uint8_t, PayloadSize> silence{};
         auto reset = [&] {
             playbackStarted = false;
@@ -161,10 +165,10 @@ struct AudioPlayer::Impl {
                 queued = 0;
                 resets++;
             }
-            if (!(native ? native->put(pcm, Frames, captureNs)
-                         : SDL_PutAudioStreamData(stream, pcm, PayloadSize)))
+            if (!(native ? native->put(pcm, frames, captureNs)
+                         : SDL_PutAudioStreamData(stream, pcm, int(payloadBytes))))
                 return;
-            queued += PayloadSize;
+            queued += int(payloadBytes);
             queuedMs = double(queued) * 1000 / BytesPerSecond;
             const unsigned primeMs =
                 requestedBufferMs
@@ -180,9 +184,12 @@ struct AudioPlayer::Impl {
         };
         while (active) {
             uint64_t wanted = session.load();
-            if (wanted != currentSession) {
+            unsigned wantedFrames = packetFrames.load();
+            if (wanted != currentSession || wantedFrames != frames) {
                 reset();
                 currentSession = wanted;
+                frames = wantedFrames;
+                payloadBytes = frames * Channels * sizeof(int16_t);
                 lastPacket = 0;
             }
             pollfd event{socket, POLLIN, 0};
@@ -198,7 +205,8 @@ struct AudioPlayer::Impl {
                 Header header;
                 if (!currentSession || session.load() != currentSession ||
                     peer.sin_addr.s_addr != server.sin_addr.s_addr ||
-                    !decode(bytes.data(), size_t(n), header) || header.session != currentSession)
+                    !decode(bytes.data(), size_t(n), header) || header.session != currentSession ||
+                    header.frames != frames)
                     continue;
                 uint64_t now = td::nowNs();
                 if (lastPacket && now - lastPacket > 100000000)
@@ -219,8 +227,8 @@ struct AudioPlayer::Impl {
                         continue;
                     }
                 }
-                Packet packet;
-                memcpy(packet.data(), bytes.data(), PacketSize);
+                Packet packet{};
+                memcpy(packet.data(), bytes.data(), size_t(n));
                 auto at = std::lower_bound(pending.begin(), pending.end(), header.sequence,
                                            [](const auto &entry, uint64_t sequence) {
                                                return entry.first < sequence;
@@ -270,7 +278,7 @@ struct AudioPlayer::Impl {
                     // captureNs identifies the first sample of the newest packet.
                     // The queue includes that packet, so subtract its duration.
                     double delay =
-                        age + double(queued) * 1000 / BytesPerSecond - double(Frames) * 1000 / Rate;
+                        age + double(queued) * 1000 / BytesPerSecond - double(frames) * 1000 / Rate;
                     if (delay > 0 && delay < 250) {
                         playoutMs = playoutMs ? .8 * playoutMs + .2 * delay : delay;
                         // Correct clock drift and excess latency gently. Updating
@@ -308,8 +316,8 @@ struct AudioPlayer::Impl {
                 uint64_t total = packets.load();
                 if (total != lastPackets)
                     std::cerr << "[Audio] packets=" << total << " lost=" << lost.load()
-                              << " underruns=" << underrunCount() << " resets=" << resets.load()
-                              << " queued_ms=" << queuedMs.load()
+                              << " packet_frames=" << frames << " underruns=" << underrunCount()
+                              << " resets=" << resets.load() << " queued_ms=" << queuedMs.load()
                               << " capture_to_receive_ms=" << receiveMs.load()
                               << " software_playout_ms=" << playoutMs
                               << " output_ms=" << outputMs.load()
@@ -335,8 +343,11 @@ uint16_t AudioPlayer::port() const {
     return td::socketPort(impl->socket);
 }
 
-void AudioPlayer::setSession(uint64_t session, bool lowLatency) {
+void AudioPlayer::setSession(uint64_t session, bool lowLatency, unsigned packetFrames) {
+    if (!td::audio::supportedFrames(packetFrames))
+        return;
     impl->lowLatency = lowLatency;
+    impl->packetFrames = packetFrames;
     impl->session = session;
 }
 
