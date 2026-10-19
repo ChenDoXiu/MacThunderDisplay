@@ -109,9 +109,10 @@ struct AudioPlayer::Impl {
                 return;
             queued += PayloadSize;
             queuedMs = double(queued) * 1000 / BytesPerSecond;
-            const unsigned primeMs = requestedBufferMs   ? std::max(5, requestedBufferMs - 8)
-                                     : lowLatency.load() ? 8
-                                                         : 30;
+            const unsigned primeMs =
+                requestedBufferMs ? std::min(requestedBufferMs, std::max(5, requestedBufferMs - 8))
+                : lowLatency.load() ? 8
+                                    : 30;
             if (!playing && queued >= int(BytesPerSecond * primeMs / 1000)) {
                 playbackStarted = true;
                 playing = SDL_ResumeAudioStreamDevice(stream);

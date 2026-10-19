@@ -75,8 +75,8 @@ int main(int argc, char **argv) {
         if (host.empty())
             throw std::runtime_error("Specify the Mac Thunderbolt IPv4 address using --host");
         if (request.audioBufferMs != 0 &&
-            (request.audioBufferMs < 8 || request.audioBufferMs > 200))
-            throw std::runtime_error("Audio buffer must be 0 (auto) or 8 to 200 ms");
+            (request.audioBufferMs < 1 || request.audioBufferMs > 200))
+            throw std::runtime_error("Audio buffer must be 0 (auto) or 1 to 200 ms");
         if (request.width < 128 || request.height < 128 || request.width > 8192 ||
             request.height > 8192 || (request.width & 1) || (request.height & 1) ||
             int64_t(request.width) * request.height > 33554432 || !std::isfinite(request.scale) ||
