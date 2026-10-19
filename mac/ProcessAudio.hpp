@@ -14,5 +14,5 @@ class ProcessAudio {
                                     size_t, uint64_t)>;
     ProcessAudio();
     ~ProcessAudio();
-    bool start(Sink sink);
+    bool start(Sink sink, bool muteLocal = false);
 };

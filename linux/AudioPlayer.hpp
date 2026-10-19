@@ -15,7 +15,7 @@ class AudioPlayer {
         double queuedMs = 0, captureToReceiveMs = 0;
     };
 
-    AudioPlayer(const sockaddr_in &server, ClockSync &clock);
+    AudioPlayer(const sockaddr_in &server, ClockSync &clock, int bufferMs = 0);
     ~AudioPlayer();
     uint16_t port() const;
     void setSession(uint64_t session, bool lowLatency = false);

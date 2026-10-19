@@ -85,6 +85,7 @@ class Client {
     std::atomic<int> chroma{1};
     std::atomic<bool> h264{false}, h264Recovery{false};
     const bool requestedH264;
+    const bool requestedMuteMac;
     int videoLanes = 0;
     std::atomic<int> width{2240}, height{1400}, logicalWidth{1600}, logicalHeight{1000}, fps{60},
         edges{0};
@@ -110,7 +111,7 @@ class Client {
     std::atomic<uint64_t> inputProbe{0};
 
     explicit Client(const std::string &host, const DisplayRequest &request)
-        : requestedH264(request.h264) {
+        : requestedH264(request.h264), requestedMuteMac(request.audio && request.muteMacAudio) {
         std::ostringstream config;
         config << "HELLO " << request.width << ' ' << request.height << ' ' << request.retina << ' '
                << request.scale << ' ' << request.fps << ' ' << request.mbps << ' '
@@ -154,11 +155,15 @@ class Client {
             hello += ' ' + std::to_string(td::socketPort(fd));
         }
         hello += std::string(" CODEC ") + (request.h264 ? "h264" : "pyrowave");
-        try {
-            audio = std::make_unique<AudioPlayer>(server, clock);
-            hello += " AUDIO1 " + std::to_string(audio->port());
-        } catch (const std::exception &error) {
-            std::cerr << "[Audio] disabled: " << error.what() << '\n';
+        if (request.audio) {
+            try {
+                audio = std::make_unique<AudioPlayer>(server, clock, request.audioBufferMs);
+                hello += " AUDIO1 " + std::to_string(audio->port());
+                if (request.muteMacAudio)
+                    hello += " MUTE1 1";
+            } catch (const std::exception &error) {
+                std::cerr << "[Audio] disabled: " << error.what() << '\n';
+            }
         }
         td::setSocketTimeout(socket, 2);
         thread = std::thread([this] {
@@ -477,6 +482,12 @@ class Client {
                             std::string captureTag, captureMode;
                             const bool tap = available && msg >> captureTag >> captureMode &&
                                              captureTag == "CAPTURE" && captureMode == "TAP";
+                            std::string mutedTag;
+                            int muted = 0;
+                            const bool localMuted = tap && msg >> mutedTag >> muted &&
+                                                    mutedTag == "MUTED" && muted == 1;
+                            if (requestedMuteMac && !localMuted)
+                                std::cerr << "Audio warning: Mac local mute unavailable\n";
                             audio->setSession(available ? s : 0, tap);
                         }
                         if (videoLanes != lanes) {

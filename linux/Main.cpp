@@ -35,6 +35,12 @@ int main(int argc, char **argv) {
                 request.mbps = std::stoi(value());
             else if (arg == "--link-mbps")
                 request.linkMbps = std::stoi(value());
+            else if (arg == "--no-audio")
+                request.audio = false;
+            else if (arg == "--mute-mac-audio")
+                request.muteMacAudio = true;
+            else if (arg == "--audio-buffer-ms")
+                request.audioBufferMs = std::stoi(value());
             else if (arg == "--settings-stdin")
                 settingsStdin = true;
             else if (arg == "--retina")
@@ -61,13 +67,16 @@ int main(int argc, char **argv) {
                 keyboard.diagnostics = true;
             else if (arg == "--help") {
                 std::cout
-                    << "thunder-display-receiver --host MAC_IPV4 [--width 2240 --height 1400 --retina --scale 1.4 --fps 60 --mbps 400 --444] [--codec pyrowave|h264] [--link-mbps 1000] [--settings-stdin] [--fullscreen] [--release-shortcut F8] [--fullscreen-shortcut Ctrl+Shift+F11] [--local-shortcuts] [--game-mouse] [--start-released] [--input-diagnostics]\nDisplay configuration is sent to the Mac before streaming starts.\nExclusive keyboard capture is enabled by default. Release and fullscreen shortcuts always stay local while the receiver is focused.\n";
+                    << "thunder-display-receiver --host MAC_IPV4 [--width 2240 --height 1400 --retina --scale 1.4 --fps 60 --mbps 400 --444] [--codec pyrowave|h264] [--link-mbps 1000] [--no-audio] [--audio-buffer-ms 0..200] [--mute-mac-audio] [--settings-stdin] [--fullscreen] [--release-shortcut F8] [--fullscreen-shortcut Ctrl+Shift+F11] [--local-shortcuts] [--game-mouse] [--start-released] [--input-diagnostics]\nDisplay configuration is sent to the Mac before streaming starts.\nExclusive keyboard capture is enabled by default. Release and fullscreen shortcuts always stay local while the receiver is focused.\n";
                 return 0;
             } else
                 throw std::runtime_error("Unknown argument: " + arg);
         }
         if (host.empty())
             throw std::runtime_error("Specify the Mac Thunderbolt IPv4 address using --host");
+        if (request.audioBufferMs != 0 &&
+            (request.audioBufferMs < 8 || request.audioBufferMs > 200))
+            throw std::runtime_error("Audio buffer must be 0 (auto) or 8 to 200 ms");
         if (request.width < 128 || request.height < 128 || request.width > 8192 ||
             request.height > 8192 || (request.width & 1) || (request.height & 1) ||
             int64_t(request.width) * request.height > 33554432 || !std::isfinite(request.scale) ||

@@ -110,7 +110,7 @@ struct ProcessAudio::Impl {
         return noErr;
     }
 
-    bool start(Sink consumer) {
+    bool start(Sink consumer, bool muteLocal) {
         if (@available(macOS 14.2, *)) {
             try {
                 sink = std::move(consumer);
@@ -129,7 +129,7 @@ struct ProcessAudio::Impl {
                     [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:excluded];
                 description.name = @"ThunderDisplay Audio";
                 description.privateTap = YES;
-                description.muteBehavior = CATapUnmuted;
+                description.muteBehavior = muteLocal ? CATapMutedWhenTapped : CATapUnmuted;
                 check(AudioHardwareCreateProcessTap(description, &tap), "create process tap");
                 check(readProperty(tap, kAudioTapPropertyFormat, format), "read tap format");
                 if (format.mFormatID != kAudioFormatLinearPCM ||
@@ -175,9 +175,9 @@ struct ProcessAudio::Impl {
                 check(AudioDeviceStart(device, proc), "start tap IOProc");
                 fprintf(
                     stderr,
-                    "[ProcessAudio] started rate=%.0f channels=2 period_frames=%u period_ms=%.3f buffer_request_status=%d\n",
+                    "[ProcessAudio] started rate=%.0f channels=2 period_frames=%u period_ms=%.3f buffer_request_status=%d mute_local=%d\n",
                     format.mSampleRate, unsigned(frames), frames * 1000.0 / format.mSampleRate,
-                    int(bufferResult));
+                    int(bufferResult), muteLocal);
                 return true;
             } catch (const std::exception &error) {
                 fprintf(stderr, "[ProcessAudio] fallback=ScreenCaptureKit reason=%s\n",
@@ -275,6 +275,6 @@ ProcessAudio::ProcessAudio() : impl(std::make_unique<Impl>()) {
 
 ProcessAudio::~ProcessAudio() = default;
 
-bool ProcessAudio::start(Sink sink) {
-    return impl->start(std::move(sink));
+bool ProcessAudio::start(Sink sink, bool muteLocal) {
+    return impl->start(std::move(sink), muteLocal);
 }

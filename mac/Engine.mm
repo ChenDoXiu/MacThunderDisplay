@@ -50,7 +50,8 @@ static void status(const std::string &s) {
 static CGVirtualDisplay *virtualDisplay;
 static std::atomic<int> captureAccess{0};
 static std::atomic<bool> running{false}, busy{false}, configured{false}, configPending{false};
-static const char *configureDisplay(int, int, int, double, int, int, int, int, int, int);
+static const char *configureDisplay(int, int, int, double, int, int, int, int, int, int, bool,
+                                    bool);
 static void stopDisplay();
 static std::string appliedConfig;
 static std::mutex configMutex;
@@ -81,6 +82,7 @@ struct Connection {
 static std::shared_ptr<Connection> connection;
 static std::unique_ptr<ProcessAudio> processAudio;
 static std::atomic<bool> processAudioActive{false};
+static bool audioCaptureRequested = false, audioMuteRequested = false; // Main queue owns these.
 static std::atomic<bool> disconnectRequested{false};
 static SCStream *stream;
 static std::atomic<bool> captureReady{false}, captureFailed{false}, captureNativePacing{false};
@@ -1073,10 +1075,18 @@ static void controlLoop(int socket) {
             }
             int audioPort = 0;
             if (request >> option) {
-                std::string extra;
                 if (option != "AUDIO1" || !(request >> audioPort) || audioPort < 1 ||
-                    audioPort > 65535 || (request >> extra)) {
+                    audioPort > 65535) {
                     reply(peer, "ERROR Invalid audio port");
+                    continue;
+                }
+            }
+            int muteMacAudio = 0;
+            if (request >> option) {
+                std::string extra;
+                if (!audioPort || option != "MUTE1" || !(request >> muteMacAudio) ||
+                    (muteMacAudio != 0 && muteMacAudio != 1) || (request >> extra)) {
+                    reply(peer, "ERROR Invalid audio options");
                     continue;
                 }
             }
@@ -1136,9 +1146,9 @@ static void controlLoop(int socket) {
                 configPending = true;
                 std::string requested = line;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    const char *error =
-                        configureDisplay(w, h, retina, scale, fps, mbps, chroma, cursorSeparate,
-                                         requestedLink, requestedCodec);
+                    const char *error = configureDisplay(
+                        w, h, retina, scale, fps, mbps, chroma, cursorSeparate, requestedLink,
+                        requestedCodec, audioPort != 0, muteMacAudio != 0);
                     {
                         std::lock_guard<std::mutex> lock(configMutex);
                         configError = error ? error : "";
@@ -1270,7 +1280,8 @@ static void controlLoop(int socket) {
                 << (useH264 ? "h264" : "pyrowave");
             if (c->audioUDP >= 0)
                 out << " AUDIO1 48000 2 16 120 CAPTURE "
-                    << (processAudioActive.load() ? "TAP" : "SCK");
+                    << (processAudioActive.load() ? "TAP" : "SCK") << " MUTED "
+                    << (processAudioActive.load() && muteMacAudio ? 1 : 0);
             reply(peer, out.str());
             if ((firstConnection || welcomeNeedsFrame) && !patternTimer) {
                 welcomeNeedsFrame = false;
@@ -2618,7 +2629,7 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                              kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
                                          config.showsCursor = !separateCursor;
                                          config.scalesToFit = YES;
-                                         if (!processAudio) {
+                                         if (audioCaptureRequested && !processAudio) {
                                              auto capture = std::make_unique<ProcessAudio>();
                                              auto sender = std::make_shared<AudioSender>();
                                              if (capture->start(
@@ -2636,12 +2647,14 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                                              sender->consume(pcm, format, frames,
                                                                              firstNs, c->audioUDP,
                                                                              c->session);
-                                                     })) {
+                                                     },
+                                                     audioMuteRequested)) {
                                                  processAudio = std::move(capture);
                                                  processAudioActive = true;
                                              }
                                          }
-                                         config.capturesAudio = !processAudioActive.load();
+                                         config.capturesAudio =
+                                             audioCaptureRequested && !processAudioActive.load();
                                          config.sampleRate = td::audio::Rate;
                                          config.channelCount = td::audio::Channels;
                                          config.excludesCurrentProcessAudio = YES;
@@ -2756,8 +2769,10 @@ static void restartConfiguredCapture() {
 
 static const char *configureDisplay(int width, int height, int retina, double scale, int fps,
                                     int mbps, int chroma444, int cursorSeparate, int requestedLink,
-                                    int requestedCodec) {
+                                    int requestedCodec, bool captureAudio, bool muteAudio) {
     stopDisplay();
+    audioCaptureRequested = captureAudio;
+    audioMuteRequested = captureAudio && muteAudio;
     separateCursor = cursorSeparate != 0;
     if (width < 128 || height < 128 || width > 8192 || height > 8192 ||
         int64_t(width) * height > 33554432 || !std::isfinite(scale) || scale < 0.5 || scale > 4 ||

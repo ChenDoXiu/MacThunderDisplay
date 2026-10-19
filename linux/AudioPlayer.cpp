@@ -20,6 +20,7 @@ struct AudioPlayer::Impl {
     int socket = -1;
     sockaddr_in server;
     ClockSync &clock;
+    const int requestedBufferMs;
     SDL_AudioStream *stream = nullptr;
     std::thread thread;
     std::atomic<bool> active{true};
@@ -28,7 +29,8 @@ struct AudioPlayer::Impl {
     std::atomic<uint64_t> session{0}, packets{0}, lost{0}, underruns{0}, resets{0};
     std::atomic<double> queuedMs{0}, receiveMs{0};
 
-    Impl(const sockaddr_in &peer, ClockSync &sync) : server(peer), clock(sync) {
+    Impl(const sockaddr_in &peer, ClockSync &sync, int bufferMs)
+        : server(peer), clock(sync), requestedBufferMs(bufferMs) {
         try {
             SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
             if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
@@ -98,7 +100,7 @@ struct AudioPlayer::Impl {
         };
         auto feed = [&](const uint8_t *pcm) {
             int queued = std::max(0, SDL_GetAudioStreamQueued(stream));
-            if (queued > int(BytesPerSecond * 100 / 1000)) {
+            if (queued > int(BytesPerSecond * std::max(100, requestedBufferMs + 50) / 1000)) {
                 SDL_ClearAudioStream(stream);
                 queued = 0;
                 resets++;
@@ -107,7 +109,9 @@ struct AudioPlayer::Impl {
                 return;
             queued += PayloadSize;
             queuedMs = double(queued) * 1000 / BytesPerSecond;
-            const unsigned primeMs = lowLatency.load() ? 8 : 30;
+            const unsigned primeMs = requestedBufferMs   ? std::max(5, requestedBufferMs - 8)
+                                     : lowLatency.load() ? 8
+                                                         : 30;
             if (!playing && queued >= int(BytesPerSecond * primeMs / 1000)) {
                 playbackStarted = true;
                 playing = SDL_ResumeAudioStreamDevice(stream);
@@ -206,7 +210,9 @@ struct AudioPlayer::Impl {
                         playoutMs = playoutMs ? .8 * playoutMs + .2 * delay : delay;
                         // Correct clock drift and excess latency gently. Updating
                         // once per 250 ms avoids chasing each individual packet.
-                        double targetMs = lowLatency.load() ? 16 : 55;
+                        double targetMs = requestedBufferMs   ? requestedBufferMs
+                                          : lowLatency.load() ? 16
+                                                              : 55;
                         playbackRatio =
                             float(1 + std::clamp((playoutMs - targetMs) / 4000, -.005, .005));
                         SDL_SetAudioStreamFrequencyRatio(stream, playbackRatio);
@@ -235,8 +241,8 @@ struct AudioPlayer::Impl {
     }
 };
 
-AudioPlayer::AudioPlayer(const sockaddr_in &server, ClockSync &clock)
-    : impl(std::make_unique<Impl>(server, clock)) {
+AudioPlayer::AudioPlayer(const sockaddr_in &server, ClockSync &clock, int bufferMs)
+    : impl(std::make_unique<Impl>(server, clock, bufferMs)) {
 }
 
 AudioPlayer::~AudioPlayer() = default;

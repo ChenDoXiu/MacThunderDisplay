@@ -53,6 +53,8 @@ These shortcuts work while the receiver window has focus:
 
 The release-control and fullscreen shortcuts can be changed in the client. They remain local even during exclusive input capture. The overlay shows frame rate, bandwidth, latency, dropped frames, and other statistics. Software timing does not include the time until the physical display emits light.
 
+The Audio page lets you disable audio, choose a playback latency target, and mute local Mac playback during capture. Apply changes with **Apply and reconnect**. Automatic buffering targets 16 ms with Process Tap or 55 ms with ScreenCaptureKit; sound-device latency is additional. Local Mac muting requires Process Tap and is released when capture stops.
+
 ### Choosing a codec
 
 | Codec | Use case | Characteristics |

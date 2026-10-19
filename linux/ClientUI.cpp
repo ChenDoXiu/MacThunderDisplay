@@ -76,11 +76,11 @@ class ClientWindow final : public QWidget {
     Discovery discovery;
     QFile log{QStringLiteral("/tmp/thunder-display-receiver.log")};
     QLineEdit *host;
-    QComboBox *presets, *fps, *link, *codec;
+    QComboBox *presets, *fps, *link, *codec, *audioBuffer;
     QString bitrateCodec;
     QSpinBox *width, *height, *mbps;
     ScaleBox *scale;
-    QCheckBox *fullscreen, *exclusive, *gameMouse;
+    QCheckBox *fullscreen, *exclusive, *gameMouse, *audioEnabled, *muteMacAudio;
     QKeySequenceEdit *releaseShortcut, *fullscreenShortcut;
     QListWidget *devices;
     QLabel *preview, *status, *stats, *deviceEmpty;
@@ -124,6 +124,9 @@ class ClientWindow final : public QWidget {
         settings.setValue("linkMbps", link->currentData());
         settings.setValue("exclusiveKeyboard", exclusive->isChecked());
         settings.setValue("gameMouse", gameMouse->isChecked());
+        settings.setValue("audioEnabled", audioEnabled->isChecked());
+        settings.setValue("audioBufferMs", audioBuffer->currentData());
+        settings.setValue("muteMacAudio", muteMacAudio->isChecked());
         settings.setValue("releaseShortcut",
                           releaseShortcut->keySequence().toString(QKeySequence::PortableText));
         settings.setValue("fullscreenShortcut",
@@ -238,6 +241,13 @@ class ClientWindow final : public QWidget {
             nextArguments << "--local-shortcuts";
         if (gameMouse->isChecked())
             nextArguments << "--game-mouse";
+        if (!audioEnabled->isChecked())
+            nextArguments << "--no-audio";
+        else {
+            nextArguments << "--audio-buffer-ms" << audioBuffer->currentData().toString();
+            if (muteMacAudio->isChecked())
+                nextArguments << "--mute-mac-audio";
+        }
         if (receiver.state() != QProcess::NotRunning) {
             restartPending = true;
             stopReceiver();
@@ -275,6 +285,8 @@ class ClientWindow final : public QWidget {
                 stats->clear();
             } else if (line.startsWith("ThunderDisplay · "))
                 stats->setText(line.section(" · ", 1, 2));
+            else if (line == "Audio warning: Mac local mute unavailable")
+                status->setText(QStringLiteral("已连接 · Mac 本机静音不可用"));
             else if (line.startsWith("Mac: ") || line.startsWith("ThunderDisplay: ")) {
                 QString error = line.section(": ", 1);
                 if (error == "Screen recording permission required")
@@ -368,7 +380,8 @@ class ClientWindow final : public QWidget {
         auto *nav = new QListWidget;
         nav->setObjectName("navigation");
         nav->setFixedWidth(136);
-        nav->addItems({QStringLiteral("连接"), QStringLiteral("显示"), QStringLiteral("键鼠")});
+        nav->addItems({QStringLiteral("连接"), QStringLiteral("显示"), QStringLiteral("音频"),
+                       QStringLiteral("键鼠")});
         body->addWidget(nav);
         auto *pages = new QStackedWidget;
         body->addWidget(pages, 1);
@@ -511,6 +524,32 @@ class ClientWindow final : public QWidget {
         preview->setWordWrap(true);
         static_cast<QVBoxLayout *>(displayForm->parentWidget()->layout())->addWidget(preview);
         displayPage->addStretch();
+        auto *audioPage = page(QStringLiteral("音频设置"));
+        auto *audioForm = form(card(audioPage, QStringLiteral("播放")));
+        audioEnabled = new QCheckBox(QStringLiteral("启用音频"));
+        audioEnabled->setChecked(settings.value("audioEnabled", true).toBool());
+        audioForm->addRow(QString(), audioEnabled);
+        audioBuffer = new QComboBox;
+        audioBuffer->addItem(QStringLiteral("自动"), 0);
+        for (int ms : {8, 12, 16, 20, 30, 50, 80, 120, 200})
+            audioBuffer->addItem(QStringLiteral("%1 ms").arg(ms), ms);
+        audioBuffer->setCurrentIndex(
+            std::max(0, audioBuffer->findData(settings.value("audioBufferMs", 0).toInt())));
+        audioBuffer->setToolTip(
+            QStringLiteral("更小延迟更低，更大播放更稳。数值为软件播放延迟目标，不含声卡延迟。"));
+        audioForm->addRow(QStringLiteral("缓冲区大小"), audioBuffer);
+        muteMacAudio = new QCheckBox(QStringLiteral("静音 Mac 本机播放"));
+        muteMacAudio->setChecked(settings.value("muteMacAudio", false).toBool());
+        audioForm->addRow(QString(), muteMacAudio);
+        auto updateAudioControls = [this] {
+            audioBuffer->setEnabled(audioEnabled->isChecked());
+            muteMacAudio->setEnabled(audioEnabled->isChecked());
+        };
+        QObject::connect(audioEnabled, &QCheckBox::toggled, this, [updateAudioControls](bool) {
+            updateAudioControls();
+        });
+        updateAudioControls();
+        audioPage->addStretch();
         auto *inputPage = page(QStringLiteral("键盘与鼠标"));
         auto *inputForm = form(card(inputPage, QStringLiteral("输入控制")));
         exclusive = new QCheckBox(QStringLiteral("捕获系统快捷键"));
