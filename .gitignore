@@ -23,6 +23,7 @@
 
 # Development notes, experiments, local settings and generated output.
 **/*.md
+!/README.md
 **/AGENTS.md
 **/.DS_Store
 **/__pycache__/
