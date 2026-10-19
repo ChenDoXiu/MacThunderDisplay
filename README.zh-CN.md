@@ -53,7 +53,7 @@ Linux 预编译包仍依赖宿主的 glibc、Vulkan 和显卡驱动。首批 x86
 
 释放控制和全屏快捷键可在客户端修改，并在独占捕获模式下保留给本地处理。叠加层可查看帧率、带宽、延迟和丢帧等统计；软件计时不包含显示器实际发光的耗时。
 
-“音频”页可启停音频、选择播放延迟目标，以及在采集时静音 Mac 本机播放；点击“应用并重连”生效。自动缓冲在 Process Tap 下目标为 16 ms，ScreenCaptureKit 下为 55 ms，均不含声卡延迟。本机静音需要 Process Tap，停止采集后自动恢复。
+“音频”页可启停音频、选择播放延迟目标，以及在采集时静音 Mac 本机播放；点击“应用并重连”生效。自动缓冲在 Process Tap 下目标为 16 ms，ScreenCaptureKit 下为 55 ms，均不含声卡延迟。本机静音需要 Process Tap，停止采集后自动恢复。Linux 构建时检测到 PipeWire 1.4+ 会优先使用原生播放，不可用时回退 SDL。原生播放请求 128 帧周期，并在叠加层增加基于驱动报告的采集到输出延迟估算；该数值不是声学实测。
 
 ### 编码选择
 
@@ -96,7 +96,7 @@ open build/ThunderDisplay.app
 
 ### Linux
 
-构建依赖：C++17 编译器、Git、CMake 3.24+、pkg-config、Python 3、Qt 6.5+（Widgets / Network）、SDL3、Vulkan 开发文件、`glslc` 和 FFmpeg 开发文件（libavcodec / libavutil）。Wayland 开发文件和 libsystemd 为可选依赖。
+构建依赖：C++17 编译器、Git、CMake 3.24+、pkg-config、Python 3、Qt 6.5+（Widgets / Network）、SDL3、Vulkan 开发文件、`glslc` 和 FFmpeg 开发文件（libavcodec / libavutil）。Wayland 开发文件、libsystemd 和 PipeWire 1.4+ 开发文件为可选依赖；启用原生 PipeWire 的构建也需要相应的 PipeWire 运行库。
 
 ```sh
 bash scripts/build-linux.sh

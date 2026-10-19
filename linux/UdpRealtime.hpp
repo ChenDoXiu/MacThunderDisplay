@@ -15,7 +15,7 @@
 namespace td {
 // Elevate only the calling reader thread. The process needs no root privileges;
 // RTKit supplies the privilege after checking its own desktop policy.
-inline bool enableReaderRealtime() {
+inline bool enableReaderRealtime(const char *label = "UDPRealtime") {
     constexpr int desiredPriority = 10;
     auto setTimeout = [](rlim_t maximum) {
         rlimit old{};
@@ -30,7 +30,7 @@ inline bool enableReaderRealtime() {
         return setrlimit(RLIMIT_RTTIME, &limit) == 0;
     };
     if (!setTimeout(200000)) {
-        std::cerr << "[UDPRealtime] RTTIME limit unavailable: " << strerror(errno)
+        std::cerr << "[" << label << "] RTTIME limit unavailable: " << strerror(errno)
                   << "; using normal event receive\n";
         return false;
     }
@@ -58,7 +58,7 @@ inline bool enableReaderRealtime() {
 
         int r = sd_bus_open_system(&bus.value);
         if (r < 0) {
-            std::cerr << "[UDPRealtime] system bus unavailable: " << strerror(-r)
+            std::cerr << "[" << label << "] system bus unavailable: " << strerror(-r)
                       << "; using normal event receive\n";
             return false;
         }
@@ -74,13 +74,13 @@ inline bool enableReaderRealtime() {
             r = sd_bus_get_property_trivial(bus.value, service, path, interface, "RTTimeUSecMax",
                                             &error.value, 'x', &timeout);
         if (r < 0 || maximumPriority < 1 || timeout <= 0) {
-            std::cerr << "[UDPRealtime] RTKit limits unavailable: "
+            std::cerr << "[" << label << "] RTKit limits unavailable: "
                       << (error.value.message ? error.value.message : "invalid limits")
                       << "; using normal event receive\n";
             return false;
         }
         if (!setTimeout(rlim_t(timeout))) {
-            std::cerr << "[UDPRealtime] RTKit RTTIME limit failed: " << strerror(errno)
+            std::cerr << "[" << label << "] RTKit RTTIME limit failed: " << strerror(errno)
                       << "; using normal event receive\n";
             return false;
         }
@@ -89,7 +89,7 @@ inline bool enableReaderRealtime() {
         int policy = sched_getscheduler(0);
         if (policy < 0 || sched_getparam(0, &current) != 0 ||
             sched_setscheduler(0, policy | SCHED_RESET_ON_FORK, &current) != 0) {
-            std::cerr << "[UDPRealtime] reset-on-fork unavailable: " << strerror(errno)
+            std::cerr << "[" << label << "] reset-on-fork unavailable: " << strerror(errno)
                       << "; using normal event receive\n";
             return false;
         }
@@ -98,7 +98,7 @@ inline bool enableReaderRealtime() {
                                &error.value, nullptr, "tu", uint64_t(syscall(SYS_gettid)),
                                priority);
         if (r < 0) {
-            std::cerr << "[UDPRealtime] RTKit request denied: "
+            std::cerr << "[" << label << "] RTKit request denied: "
                       << (error.value.message ? error.value.message : strerror(-r))
                       << "; using normal event receive\n";
             return false;
@@ -106,7 +106,8 @@ inline bool enableReaderRealtime() {
         source = "rtkit";
 #else
         std::cerr
-            << "[UDPRealtime] native request denied and RTKit support not built; using normal event receive\n";
+            << "[" << label
+            << "] native request denied and RTKit support not built; using normal event receive\n";
         return false;
 #endif
     }
@@ -114,8 +115,8 @@ inline bool enableReaderRealtime() {
     int policy = sched_getscheduler(0);
     bool enabled = policy >= 0 && (policy & ~SCHED_RESET_ON_FORK) == SCHED_RR &&
                    sched_getparam(0, &actual) == 0 && actual.sched_priority > 0;
-    std::cerr << "[UDPRealtime] source=" << source << " enabled=" << enabled << " policy=" << policy
-              << " priority=" << actual.sched_priority << '\n';
+    std::cerr << "[" << label << "] source=" << source << " enabled=" << enabled
+              << " policy=" << policy << " priority=" << actual.sched_priority << '\n';
     return enabled;
 }
 }

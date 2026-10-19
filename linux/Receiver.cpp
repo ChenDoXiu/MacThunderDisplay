@@ -1035,6 +1035,9 @@ class RenderLoop {
                             auto audio = client.audio->statistics();
                             text << "Audio PCM: queue " << audio.queuedMs << " ms / lost "
                                  << audio.lost << " / underrun " << audio.underruns << '\n';
+                            if (audio.native && audio.estimatedPlayoutMs >= 0)
+                                text << "Audio capture -> output: " << audio.estimatedPlayoutMs
+                                     << " ms / output " << audio.outputMs << " ms (estimate)\n";
                         }
                         text << (lastCallbackTime ? "Capture callback -> client GPU ready"
                                                   : "Source display -> client GPU ready")

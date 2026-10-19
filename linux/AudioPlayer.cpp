@@ -2,6 +2,9 @@
 #include "Audio.hpp"
 #include "ClockSync.hpp"
 #include "Transport.hpp"
+#include "PipeWirePlayback.hpp"
+#include "UdpRealtime.hpp"
+#include <cstdlib>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -9,7 +12,7 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
-#include <map>
+#include <vector>
 #include <poll.h>
 #include <stdexcept>
 #include <thread>
@@ -22,39 +25,53 @@ struct AudioPlayer::Impl {
     ClockSync &clock;
     const int requestedBufferMs;
     SDL_AudioStream *stream = nullptr;
+    std::unique_ptr<PipeWirePlayback> native;
     std::thread thread;
     std::atomic<bool> active{true};
     std::atomic<bool> lowLatency{false};
     std::atomic<bool> playbackStarted{false};
     std::atomic<uint64_t> session{0}, packets{0}, lost{0}, underruns{0}, resets{0};
-    std::atomic<double> queuedMs{0}, receiveMs{0};
+    std::atomic<double> queuedMs{0}, receiveMs{0}, softwareMs{0}, estimatedMs{-1}, outputMs{0};
 
     Impl(const sockaddr_in &peer, ClockSync &sync, int bufferMs)
         : server(peer), clock(sync), requestedBufferMs(bufferMs) {
         try {
-            SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
-            if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
-                throw std::runtime_error(SDL_GetError());
-            SDL_AudioSpec input{SDL_AUDIO_S16LE, td::audio::Channels, td::audio::Rate};
-            stream = SDL_OpenAudioDeviceStream(
-                SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &input,
-                [](void *context, SDL_AudioStream *, int additionalBytes, int) {
-                    auto &self = *static_cast<Impl *>(context);
-                    if (additionalBytes > 0 && self.playbackStarted.load(std::memory_order_relaxed))
-                        self.underruns.fetch_add(1, std::memory_order_relaxed);
-                },
-                this);
-            if (!stream)
-                throw std::runtime_error(SDL_GetError());
+            const char *backend = std::getenv("THUNDERDISPLAY_AUDIO_BACKEND");
+            if (!backend || strcmp(backend, "sdl")) {
+                try {
+                    native = std::make_unique<PipeWirePlayback>();
+                    std::cerr
+                        << "[Audio] backend=pipewire-native requested_period_frames=128 rt_process=1\n";
+                } catch (const std::exception &error) {
+                    std::cerr << "[Audio] native fallback: " << error.what() << '\n';
+                }
+            }
+            if (!native) {
+                SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
+                if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
+                    throw std::runtime_error(SDL_GetError());
+                SDL_AudioSpec input{SDL_AUDIO_S16LE, td::audio::Channels, td::audio::Rate};
+                stream = SDL_OpenAudioDeviceStream(
+                    SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &input,
+                    [](void *context, SDL_AudioStream *, int additionalBytes, int) {
+                        auto &self = *static_cast<Impl *>(context);
+                        if (additionalBytes > 0 &&
+                            self.playbackStarted.load(std::memory_order_relaxed))
+                            self.underruns.fetch_add(1, std::memory_order_relaxed);
+                    },
+                    this);
+                if (!stream)
+                    throw std::runtime_error(SDL_GetError());
+                SDL_AudioSpec output{};
+                int period = 0;
+                SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &output, &period);
+                std::cerr << "[Audio] PCM 48000Hz stereo S16LE packet_ms=2.5 backend="
+                          << SDL_GetCurrentAudioDriver() << " device_rate=" << output.freq
+                          << " device_period_frames=" << period << '\n';
+            }
             socket = td::bindUdp();
             int bytes = 128 * 1024;
             setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes));
-            SDL_AudioSpec output{};
-            int period = 0;
-            SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &output, &period);
-            std::cerr << "[Audio] PCM 48000Hz stereo S16LE packet_ms=2.5 backend="
-                      << SDL_GetCurrentAudioDriver() << " device_rate=" << output.freq
-                      << " device_period_frames=" << period << '\n';
             thread = std::thread([this] {
                 run();
             });
@@ -71,13 +88,51 @@ struct AudioPlayer::Impl {
         if (thread.joinable())
             thread.join();
         td::closeSocket(socket);
-        SDL_DestroyAudioStream(stream);
+        if (stream)
+            SDL_DestroyAudioStream(stream);
+    }
+
+    int queuedBytes() const {
+        return native ? native->queuedBytes() : std::max(0, SDL_GetAudioStreamQueued(stream));
+    }
+
+    void pausePlayback() {
+        if (native)
+            native->pause();
+        else
+            SDL_PauseAudioStreamDevice(stream);
+    }
+
+    void clearPlayback() {
+        if (native)
+            native->clear();
+        else
+            SDL_ClearAudioStream(stream);
+    }
+
+    void setRate(float ratio) {
+        if (native)
+            native->setRate(ratio);
+        else
+            SDL_SetAudioStreamFrequencyRatio(stream, ratio);
+    }
+
+    bool resumePlayback() {
+        return native ? native->resume() : SDL_ResumeAudioStreamDevice(stream);
+    }
+
+    uint64_t underrunCount() const {
+        return native ? native->timing().underruns : underruns.load();
     }
 
     void run() {
         using namespace td::audio;
         pthread_setname_np(pthread_self(), "td-audio");
-        std::map<uint64_t, Packet> pending;
+        td::enableReaderRealtime("AudioRealtime");
+        // At most 25 packets are held before the overflow branch below runs.
+        // Reserve once so the realtime receive thread never allocates per packet.
+        std::vector<std::pair<uint64_t, Packet>> pending;
+        pending.reserve(25);
         uint64_t currentSession = 0, next = 0, lastPacket = 0, gapAt = 0;
         uint64_t reportAt = td::nowNs(), lastPackets = 0;
         uint64_t lastCapture = 0, lastRateAt = 0;
@@ -87,35 +142,38 @@ struct AudioPlayer::Impl {
         std::array<uint8_t, PayloadSize> silence{};
         auto reset = [&] {
             playbackStarted = false;
-            SDL_PauseAudioStreamDevice(stream);
-            SDL_ClearAudioStream(stream);
+            pausePlayback();
+            clearPlayback();
             pending.clear();
             next = gapAt = 0;
             lastCapture = lastRateAt = 0;
             playoutMs = 0;
             playbackRatio = 1.f;
             playing = false;
-            SDL_SetAudioStreamFrequencyRatio(stream, 1.f);
-            queuedMs = 0;
+            setRate(1.f);
+            queuedMs = softwareMs = outputMs = 0;
+            estimatedMs = -1;
         };
-        auto feed = [&](const uint8_t *pcm) {
-            int queued = std::max(0, SDL_GetAudioStreamQueued(stream));
+        auto feed = [&](const uint8_t *pcm, uint64_t captureNs) {
+            int queued = queuedBytes();
             if (queued > int(BytesPerSecond * std::max(100, requestedBufferMs + 50) / 1000)) {
-                SDL_ClearAudioStream(stream);
+                clearPlayback();
                 queued = 0;
                 resets++;
             }
-            if (!SDL_PutAudioStreamData(stream, pcm, PayloadSize))
+            if (!(native ? native->put(pcm, Frames, captureNs)
+                         : SDL_PutAudioStreamData(stream, pcm, PayloadSize)))
                 return;
             queued += PayloadSize;
             queuedMs = double(queued) * 1000 / BytesPerSecond;
             const unsigned primeMs =
-                requestedBufferMs ? std::min(requestedBufferMs, std::max(5, requestedBufferMs - 8))
+                requestedBufferMs
+                    ? std::min(requestedBufferMs, std::max(native ? 8 : 5, requestedBufferMs - 8))
                 : lowLatency.load() ? 8
                                     : 30;
             if (!playing && queued >= int(BytesPerSecond * primeMs / 1000)) {
                 playbackStarted = true;
-                playing = SDL_ResumeAudioStreamDevice(stream);
+                playing = resumePlayback();
                 if (!playing)
                     playbackStarted = false;
             }
@@ -163,14 +221,19 @@ struct AudioPlayer::Impl {
                 }
                 Packet packet;
                 memcpy(packet.data(), bytes.data(), PacketSize);
-                pending.emplace(header.sequence, packet);
+                auto at = std::lower_bound(pending.begin(), pending.end(), header.sequence,
+                                           [](const auto &entry, uint64_t sequence) {
+                                               return entry.first < sequence;
+                                           });
+                if (at == pending.end() || at->first != header.sequence)
+                    pending.insert(at, {header.sequence, packet});
                 packets++;
                 if (pending.size() > 24) {
                     resets++;
                     auto newest = *pending.rbegin();
                     reset();
                     next = newest.first;
-                    pending.emplace(std::move(newest));
+                    pending.emplace_back(std::move(newest));
                 }
             }
             uint64_t now = td::nowNs();
@@ -185,15 +248,15 @@ struct AudioPlayer::Impl {
                     lost += missing;
                     if (missing <= 8) {
                         for (uint64_t i = 0; i < missing; ++i)
-                            feed(silence.data());
+                            feed(silence.data(), 0);
                     } else {
-                        SDL_ClearAudioStream(stream);
+                        clearPlayback();
                         resets++;
                     }
                     next = it->first;
                 }
-                feed(it->second.data() + HeaderSize);
                 lastCapture = get(it->second.data() + 24);
+                feed(it->second.data() + HeaderSize, lastCapture);
                 next = it->first + 1;
                 pending.erase(it);
                 gapAt = 0;
@@ -201,12 +264,13 @@ struct AudioPlayer::Impl {
             if (playing && lastCapture && now - lastRateAt >= 250000000) {
                 auto estimate = clock.estimate(currentSession, now);
                 if (estimate.valid) {
-                    int queued = std::max(0, SDL_GetAudioStreamQueued(stream));
+                    int queued = queuedBytes();
                     double age =
                         (int64_t(now) + estimate.serverMinusClient - int64_t(lastCapture)) / 1e6;
-                    // A timestamped packet and the remaining PCM describe the same
-                    // playback timeline, regardless of the 20 ms capture bursts.
-                    double delay = age + double(queued) * 1000 / BytesPerSecond;
+                    // captureNs identifies the first sample of the newest packet.
+                    // The queue includes that packet, so subtract its duration.
+                    double delay =
+                        age + double(queued) * 1000 / BytesPerSecond - double(Frames) * 1000 / Rate;
                     if (delay > 0 && delay < 250) {
                         playoutMs = playoutMs ? .8 * playoutMs + .2 * delay : delay;
                         // Correct clock drift and excess latency gently. Updating
@@ -216,10 +280,25 @@ struct AudioPlayer::Impl {
                                                               : 55;
                         playbackRatio =
                             float(1 + std::clamp((playoutMs - targetMs) / 4000, -.005, .005));
-                        SDL_SetAudioStreamFrequencyRatio(stream, playbackRatio);
+                        setRate(playbackRatio);
+                        softwareMs = playoutMs;
                     }
                 }
                 lastRateAt = now;
+            }
+            if (native) {
+                auto timing = native->timing();
+                auto estimate = clock.estimate(currentSession, now);
+                outputMs = timing.deviceMs;
+                if (estimate.valid && timing.captureNs && timing.presentationNs &&
+                    timing.presentationNs + 100000000 > now) {
+                    double total = (int64_t(timing.presentationNs) + estimate.serverMinusClient -
+                                    int64_t(timing.captureNs)) /
+                                   1e6;
+                    estimatedMs = total >= 0 && total < 1000 ? total : -1;
+                } else {
+                    estimatedMs = -1;
+                }
             }
             if (lastPacket && now - lastPacket > 100000000) {
                 reset();
@@ -229,11 +308,15 @@ struct AudioPlayer::Impl {
                 uint64_t total = packets.load();
                 if (total != lastPackets)
                     std::cerr << "[Audio] packets=" << total << " lost=" << lost.load()
-                              << " underruns=" << underruns.load() << " resets=" << resets.load()
+                              << " underruns=" << underrunCount() << " resets=" << resets.load()
                               << " queued_ms=" << queuedMs.load()
                               << " capture_to_receive_ms=" << receiveMs.load()
-                              << " software_playout_ms=" << playoutMs << " rate=" << playbackRatio
-                              << '\n';
+                              << " software_playout_ms=" << playoutMs
+                              << " output_ms=" << outputMs.load()
+                              << " estimated_playout_ms=" << estimatedMs.load()
+                              << " missing_frames=" << (native ? native->timing().missingFrames : 0)
+                              << " period_frames=" << (native ? native->timing().periodFrames : 256)
+                              << " rate=" << playbackRatio << '\n';
                 lastPackets = total;
                 reportAt = now;
             }
@@ -258,6 +341,7 @@ void AudioPlayer::setSession(uint64_t session, bool lowLatency) {
 }
 
 AudioPlayer::Statistics AudioPlayer::statistics() const {
-    return {impl->packets.load(), impl->lost.load(),     impl->underruns.load(),
-            impl->resets.load(),  impl->queuedMs.load(), impl->receiveMs.load()};
+    return {impl->packets.load(),     impl->lost.load(),     impl->underrunCount(),
+            impl->resets.load(),      impl->queuedMs.load(), impl->receiveMs.load(),
+            impl->estimatedMs.load(), impl->outputMs.load(), impl->native != nullptr};
 }

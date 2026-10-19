@@ -53,12 +53,18 @@ else()
                                         linux/NativeScreen.cpp)
   target_include_directories(thunder-display-client PRIVATE linux common)
   target_link_libraries(thunder-display-client PRIVATE Qt6::Widgets Qt6::Network)
-  add_executable(thunder-display-receiver linux/Main.cpp linux/Receiver.cpp linux/VulkanView.cpp
-                                          linux/H264Decoder.cpp linux/AudioPlayer.cpp)
+  add_executable(
+    thunder-display-receiver linux/Main.cpp linux/Receiver.cpp linux/VulkanView.cpp
+                             linux/H264Decoder.cpp linux/AudioPlayer.cpp linux/PipeWirePlayback.cpp)
   target_include_directories(thunder-display-receiver PRIVATE vendor/pyrowave linux)
   target_link_libraries(thunder-display-receiver PRIVATE td-common pyrowave-shared SDL3::SDL3
                                                          Vulkan::Vulkan)
   find_package(PkgConfig REQUIRED)
+  pkg_check_modules(TD_PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3>=1.4)
+  if(TD_PIPEWIRE_FOUND)
+    target_compile_definitions(thunder-display-receiver PRIVATE TD_HAVE_PIPEWIRE=1)
+    target_link_libraries(thunder-display-receiver PRIVATE PkgConfig::TD_PIPEWIRE)
+  endif()
   pkg_check_modules(TD_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
   target_link_libraries(thunder-display-receiver PRIVATE PkgConfig::TD_FFMPEG)
   if(PkgConfig_FOUND)
