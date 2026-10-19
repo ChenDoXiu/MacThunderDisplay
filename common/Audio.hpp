@@ -6,6 +6,7 @@
 
 namespace td::audio {
 constexpr unsigned Rate = 48000, Channels = 2, Frames = 128, LegacyFrames = 120;
+constexpr unsigned LowLatencyFrames = 64;
 constexpr size_t HeaderSize = 40, PayloadSize = Frames * Channels * sizeof(int16_t);
 constexpr size_t PacketSize = HeaderSize + PayloadSize;
 constexpr unsigned BytesPerSecond = Rate * Channels * sizeof(int16_t);
@@ -16,7 +17,11 @@ struct Header {
 };
 
 inline bool supportedFrames(unsigned frames) {
-    return frames == LegacyFrames || frames == Frames;
+    return frames == LegacyFrames || frames == Frames || frames == LowLatencyFrames;
+}
+
+inline unsigned preferredFrames(int bufferMs) {
+    return bufferMs > 0 && bufferMs <= 8 ? LowLatencyFrames : Frames;
 }
 
 inline size_t packetSize(unsigned frames) {

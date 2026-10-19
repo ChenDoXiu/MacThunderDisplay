@@ -40,7 +40,7 @@ struct AudioPlayer::Impl {
             const char *backend = std::getenv("THUNDERDISPLAY_AUDIO_BACKEND");
             if (!backend || strcmp(backend, "sdl")) {
                 try {
-                    unsigned period = bufferMs > 0 && bufferMs <= 8 ? 64 : 128;
+                    unsigned period = td::audio::preferredFrames(bufferMs);
                     native = std::make_unique<PipeWirePlayback>(period);
                     std::cerr << "[Audio] backend=pipewire-native requested_period_frames="
                               << period << " rt_process=1\n";

@@ -50,8 +50,8 @@ static void status(const std::string &s) {
 static CGVirtualDisplay *virtualDisplay;
 static std::atomic<int> captureAccess{0};
 static std::atomic<bool> running{false}, busy{false}, configured{false}, configPending{false};
-static const char *configureDisplay(int, int, int, double, int, int, int, int, int, int, bool,
-                                    bool);
+static const char *configureDisplay(int, int, int, double, int, int, int, int, int, int, bool, bool,
+                                    unsigned);
 static void stopDisplay();
 static std::string appliedConfig;
 static std::mutex configMutex;
@@ -83,7 +83,9 @@ struct Connection {
 static std::shared_ptr<Connection> connection;
 static std::unique_ptr<ProcessAudio> processAudio;
 static std::atomic<bool> processAudioActive{false};
+static std::atomic<unsigned> processAudioPeriod{0};
 static bool audioCaptureRequested = false, audioMuteRequested = false; // Main queue owns these.
+static unsigned audioCaptureFrames = td::audio::Frames;
 static std::atomic<bool> disconnectRequested{false};
 static SCStream *stream;
 static std::atomic<bool> captureReady{false}, captureFailed{false}, captureNativePacing{false};
@@ -1157,7 +1159,7 @@ static void controlLoop(int socket) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const char *error = configureDisplay(
                         w, h, retina, scale, fps, mbps, chroma, cursorSeparate, requestedLink,
-                        requestedCodec, audioPort != 0, muteMacAudio != 0);
+                        requestedCodec, audioPort != 0, muteMacAudio != 0, audioFrames);
                     {
                         std::lock_guard<std::mutex> lock(configMutex);
                         configError = error ? error : "";
@@ -1225,6 +1227,15 @@ static void controlLoop(int socket) {
                 c = std::make_shared<Connection>();
                 c->session = td::random64();
                 c->audioFrames = audioFrames;
+                if (audioFrames == td::audio::LowLatencyFrames &&
+                    (!processAudioActive.load() ||
+                     processAudioPeriod.load() != td::audio::LowLatencyFrames)) {
+                    c->audioFrames = td::audio::Frames;
+                    fprintf(
+                        stderr,
+                        "[Audio] 64-frame capture unavailable: actual_period=%u; using 128-frame packets\n",
+                        processAudioPeriod.load());
+                }
                 c->peer = peer;
                 c->udp = td::bindUdp();
                 if (::connect(c->udp, reinterpret_cast<const sockaddr *>(&peer), sizeof(peer)) <
@@ -2659,7 +2670,8 @@ static void startConfiguredCapture(uint32_t wanted, int requestedWidth, int requ
                                                                              c->session,
                                                                              c->audioFrames);
                                                      },
-                                                     audioMuteRequested)) {
+                                                     audioMuteRequested, audioCaptureFrames)) {
+                                                 processAudioPeriod = capture->periodFrames();
                                                  processAudio = std::move(capture);
                                                  processAudioActive = true;
                                              }
@@ -2714,6 +2726,7 @@ static void pauseConfiguredCapture() {
     if (!configured || patternTimer)
         return;
     processAudioActive = false;
+    processAudioPeriod = 0;
     processAudio.reset();
     captureReady = false;
     captureFailed = true;
@@ -2780,10 +2793,13 @@ static void restartConfiguredCapture() {
 
 static const char *configureDisplay(int width, int height, int retina, double scale, int fps,
                                     int mbps, int chroma444, int cursorSeparate, int requestedLink,
-                                    int requestedCodec, bool captureAudio, bool muteAudio) {
+                                    int requestedCodec, bool captureAudio, bool muteAudio,
+                                    unsigned audioFrames) {
     stopDisplay();
     audioCaptureRequested = captureAudio;
     audioMuteRequested = captureAudio && muteAudio;
+    audioCaptureFrames = audioFrames == td::audio::LowLatencyFrames ? td::audio::LowLatencyFrames
+                                                                    : td::audio::Frames;
     separateCursor = cursorSeparate != 0;
     if (width < 128 || height < 128 || width > 8192 || height > 8192 ||
         int64_t(width) * height > 33554432 || !std::isfinite(scale) || scale < 0.5 || scale > 4 ||
@@ -2963,6 +2979,7 @@ static const char *configureDisplay(int width, int height, int retina, double sc
 static void stopDisplay() {
     configured = false;
     processAudioActive = false;
+    processAudioPeriod = 0;
     processAudio.reset();
     captureReady = false;
     captureFailed = false;

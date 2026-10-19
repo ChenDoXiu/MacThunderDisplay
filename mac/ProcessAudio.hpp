@@ -14,5 +14,6 @@ class ProcessAudio {
                                     size_t, uint64_t)>;
     ProcessAudio();
     ~ProcessAudio();
-    bool start(Sink sink, bool muteLocal = false);
+    bool start(Sink sink, bool muteLocal = false, unsigned periodFrames = 128);
+    unsigned periodFrames() const;
 };

@@ -54,6 +54,7 @@ struct ProcessAudio::Impl {
     AudioObjectID tap = kAudioObjectUnknown, device = kAudioObjectUnknown;
     AudioDeviceIOProcID proc = nullptr;
     AudioStreamBasicDescription format{};
+    unsigned actualPeriod = 0;
     semaphore_t ready = SEMAPHORE_NULL;
     mach_timebase_info_data_t timebase{};
     int64_t clockOffset = 0;
@@ -110,7 +111,7 @@ struct ProcessAudio::Impl {
         return noErr;
     }
 
-    bool start(Sink consumer, bool muteLocal) {
+    bool start(Sink consumer, bool muteLocal, unsigned requestedPeriod) {
         if (@available(macOS 14.2, *)) {
             try {
                 sink = std::move(consumer);
@@ -162,22 +163,42 @@ struct ProcessAudio::Impl {
                 }
                 if (!alive)
                     throw std::runtime_error("tap aggregate is not alive");
-                UInt32 frames = 128;
+                UInt32 frames = requestedPeriod == td::audio::LowLatencyFrames
+                                    ? td::audio::LowLatencyFrames
+                                    : td::audio::Frames;
+                const UInt32 requested = frames;
                 address = property(kAudioDevicePropertyBufferFrameSize);
                 OSStatus bufferResult = AudioObjectSetPropertyData(device, &address, 0, nullptr,
                                                                    sizeof(frames), &frames);
-                readProperty(device, kAudioDevicePropertyBufferFrameSize, frames);
+                UInt32 configured = 0;
+                OSStatus configuredResult =
+                    readProperty(device, kAudioDevicePropertyBufferFrameSize, configured);
+                if (requested == td::audio::LowLatencyFrames &&
+                    (bufferResult != noErr || configuredResult != noErr ||
+                     configured != requested)) {
+                    frames = td::audio::Frames;
+                    OSStatus fallbackResult = AudioObjectSetPropertyData(
+                        device, &address, 0, nullptr, sizeof(frames), &frames);
+                    fprintf(stderr,
+                            "[ProcessAudio] 64-frame period unavailable; retrying 128 status=%d\n",
+                            int(fallbackResult));
+                }
                 check(AudioDeviceCreateIOProcID(device, capture, this, &proc), "create tap IOProc");
                 active = true;
                 worker = std::thread([this] {
                     run();
                 });
                 check(AudioDeviceStart(device, proc), "start tap IOProc");
+                frames = 0;
+                OSStatus queryResult =
+                    readProperty(device, kAudioDevicePropertyBufferFrameSize, frames);
+                actualPeriod = queryResult == noErr ? frames : 0;
                 fprintf(
                     stderr,
-                    "[ProcessAudio] started rate=%.0f channels=2 period_frames=%u period_ms=%.3f buffer_request_status=%d mute_local=%d\n",
-                    format.mSampleRate, unsigned(frames), frames * 1000.0 / format.mSampleRate,
-                    int(bufferResult), muteLocal);
+                    "[ProcessAudio] started rate=%.0f channels=2 requested_period_frames=%u period_frames=%u period_ms=%.3f buffer_request_status=%d buffer_query_status=%d mute_local=%d\n",
+                    format.mSampleRate, unsigned(requested), actualPeriod,
+                    actualPeriod * 1000.0 / format.mSampleRate, int(bufferResult), int(queryResult),
+                    muteLocal);
                 return true;
             } catch (const std::exception &error) {
                 fprintf(stderr, "[ProcessAudio] fallback=ScreenCaptureKit reason=%s\n",
@@ -193,6 +214,7 @@ struct ProcessAudio::Impl {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
         uint64_t reportAt = td::nowNs(), callbacks = 0;
         double maxWaitMs = 0, ageTotal = 0;
+        unsigned minFrames = MaxFrames, maxFrames = 0;
         while (active) {
             kern_return_t result;
             do {
@@ -226,6 +248,8 @@ struct ProcessAudio::Impl {
                 maxWaitMs = std::max(maxWaitMs, (now - arrived) / 1e6);
                 ageTotal += (int64_t(now) - int64_t(first)) / 1e6;
                 callbacks++;
+                minFrames = std::min(minFrames, unsigned(chunk.frames));
+                maxFrames = std::max(maxFrames, unsigned(chunk.frames));
             } else {
                 dropped++;
             }
@@ -233,18 +257,21 @@ struct ProcessAudio::Impl {
             if (now - reportAt >= 1000000000) {
                 fprintf(
                     stderr,
-                    "[ProcessAudio] callbacks=%llu ring_drop_total=%llu worker_wait_max_ms=%.3f capture_age_avg_ms=%.3f\n",
+                    "[ProcessAudio] callbacks=%llu ring_drop_total=%llu worker_wait_max_ms=%.3f capture_age_avg_ms=%.3f callback_frames_min=%u callback_frames_max=%u\n",
                     (unsigned long long)callbacks, (unsigned long long)dropped.load(), maxWaitMs,
-                    callbacks ? ageTotal / callbacks : 0);
+                    callbacks ? ageTotal / callbacks : 0, callbacks ? minFrames : 0, maxFrames);
                 reportAt = now;
                 callbacks = 0;
                 maxWaitMs = ageTotal = 0;
+                minFrames = MaxFrames;
+                maxFrames = 0;
             }
         }
     }
 
     void stop() {
         active = false;
+        actualPeriod = 0;
         if (proc && device) {
             AudioDeviceStop(device, proc);
             AudioDeviceDestroyIOProcID(device, proc);
@@ -275,6 +302,10 @@ ProcessAudio::ProcessAudio() : impl(std::make_unique<Impl>()) {
 
 ProcessAudio::~ProcessAudio() = default;
 
-bool ProcessAudio::start(Sink sink, bool muteLocal) {
-    return impl->start(std::move(sink), muteLocal);
+bool ProcessAudio::start(Sink sink, bool muteLocal, unsigned periodFrames) {
+    return impl->start(std::move(sink), muteLocal, periodFrames);
+}
+
+unsigned ProcessAudio::periodFrames() const {
+    return impl->actualPeriod;
 }

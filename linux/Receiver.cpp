@@ -161,7 +161,8 @@ class Client {
                 audio = std::make_unique<AudioPlayer>(server, clock, request.audioBufferMs);
                 hello += " AUDIO1 " + std::to_string(audio->port());
                 hello += std::string(" MUTE1 ") + (request.muteMacAudio ? "1" : "0");
-                hello += " AFRAMES1 " + std::to_string(td::audio::Frames);
+                hello += " AFRAMES1 " +
+                         std::to_string(td::audio::preferredFrames(request.audioBufferMs));
             } catch (const std::exception &error) {
                 std::cerr << "[Audio] disabled: " << error.what() << '\n';
             }
@@ -637,15 +638,20 @@ class Client {
                         }
                     }
                 } else if (n >= 6 && n < 512 && memcmp(buffer, "ERROR ", 6) == 0) {
-                    // Older senders reject trailing audio capabilities. Retry
-                    // their original request once, retaining audio and mute.
+                    // Negotiate down for senders that support only 128 frames,
+                    // then retry the original 120-frame request for older builds.
                     const auto capability = hello.find(" AFRAMES1 ");
                     if (peer.sin_port == server.sin_port && audio && !connected &&
                         capability != std::string::npos &&
                         std::string(reinterpret_cast<char *>(buffer), n) ==
                             "ERROR Invalid audio options") {
-                        hello.erase(capability);
-                        std::cerr << "[Audio] legacy sender; retrying 120-frame packets\n";
+                        if (hello.substr(capability) == " AFRAMES1 64") {
+                            hello.replace(capability, std::string::npos, " AFRAMES1 128");
+                            std::cerr << "[Audio] sender lacks 64-frame mode; retrying 128\n";
+                        } else {
+                            hello.erase(capability);
+                            std::cerr << "[Audio] legacy sender; retrying 120-frame packets\n";
+                        }
                         send(hello);
                         continue;
                     }
