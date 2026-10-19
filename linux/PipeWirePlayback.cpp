@@ -15,6 +15,7 @@
 
 struct PipeWirePlayback::Impl {
     static constexpr size_t Capacity = 32768, Stride = td::audio::Channels * sizeof(int16_t);
+    static constexpr size_t BlendFrames = 64;
     static_assert(std::atomic<uint64_t>::is_always_lock_free);
     std::array<std::array<int16_t, 2>, Capacity> pcm{};
     std::array<uint64_t, Capacity> timestamps{};
@@ -22,6 +23,10 @@ struct PipeWirePlayback::Impl {
     alignas(64) std::atomic<uint64_t> read{0};
     std::atomic<uint64_t> discardBefore{0};
     std::atomic<uint64_t> underruns{0}, missingFrames{0};
+    std::atomic<uint64_t> catchups{0}, skippedFrames{0}, startupUntil{0};
+    std::atomic<uint64_t> catchupBefore{0}, catchupKept{0};
+    std::atomic<unsigned> keepFrames{768}, guardFrames{256};
+    std::atomic<bool> fadeIn{true};
     std::atomic<uint64_t> timingSeq{0}, captureNs{0}, presentationNs{0}, deviceNs{0};
     std::atomic<unsigned> periodFrames{128};
     std::atomic<bool> enabled{false};
@@ -31,6 +36,8 @@ struct PipeWirePlayback::Impl {
     pw_stream_events events{};
     bool loopStarted = false;
     std::array<int16_t, 2> lastSample{};
+    std::array<std::array<int16_t, 2>, BlendFrames> blendFrom{};
+    size_t blendAt = BlendFrames;
     bool recovering = false;
     const unsigned requestedPeriod;
 
@@ -144,15 +151,40 @@ struct PipeWirePlayback::Impl {
                           buffer->requested ? size_t(buffer->requested) : size_t(requestedPeriod));
         periodFrames = unsigned(frames);
         auto *out = static_cast<int16_t *>(data.data);
-        uint64_t r = std::max(read.load(std::memory_order_relaxed),
-                              discardBefore.load(std::memory_order_acquire));
+        uint64_t previousRead = read.load(std::memory_order_relaxed);
+        uint64_t r = std::max(previousRead, discardBefore.load(std::memory_order_acquire));
         uint64_t w = written.load(std::memory_order_acquire);
-        size_t supplied =
-            enabled.load(std::memory_order_relaxed) ? std::min<uint64_t>(frames, w - r) : 0;
+        const bool running = enabled.load(std::memory_order_relaxed);
+        const uint64_t now = pw_stream_get_nsec(stream);
+        const bool resetFade =
+            fadeIn.exchange(false, std::memory_order_relaxed) || r > previousRead;
+        if (resetFade) {
+            blendFrom = {};
+            blendAt = 0;
+            lastSample = {};
+        }
+        // Only the consumer advances read. Trim in the first real output
+        // callback as well, after asynchronous device activation has finished.
+        // A generous steady-state guard leaves ordinary clock correction alone.
+        const uint64_t keep = std::max<uint64_t>(keepFrames.load(), 2 * frames);
+        const uint64_t guard = std::max<uint64_t>(
+            guardFrames.load(), td::audio::Rate * (now < startupUntil.load() ? 4 : 20) / 1000);
+        uint64_t skipped = 0;
+        if (running && w - r > keep + guard) {
+            if (resetFade || recovering)
+                blendFrom = {};
+            else
+                for (size_t i = 0; i < BlendFrames; ++i)
+                    blendFrom[i] = pcm[(r + i) % Capacity];
+            skipped = w - r - keep;
+            r += skipped;
+            blendAt = 0;
+            recovering = false;
+        }
+        size_t supplied = running ? std::min<uint64_t>(frames, w - r) : 0;
         pw_time time{};
         double delayNs = 0;
         bool timed = pw_stream_get_time_n(stream, &time, sizeof(time)) >= 0 && time.rate.denom;
-        uint64_t now = pw_stream_get_nsec(stream);
         if (timed) {
             delayNs = double(time.buffered + time.queued) * 1e9 / td::audio::Rate +
                       double(time.delay) * 1e9 * time.rate.num / time.rate.denom -
@@ -170,10 +202,16 @@ struct PipeWirePlayback::Impl {
             auto sample = pcm[(r + i) % Capacity];
             for (unsigned channel = 0; channel < 2; ++channel) {
                 int value = sample[channel];
-                if (recovering && i < 32)
+                if (blendAt < BlendFrames)
+                    value = (int(blendFrom[blendAt][channel]) * int(BlendFrames - blendAt - 1) +
+                             value * int(blendAt + 1)) /
+                            int(BlendFrames);
+                else if (recovering && i < 32)
                     value = value * int(i + 1) / 32;
                 out[i * 2 + channel] = int16_t(value);
             }
+            if (blendAt < BlendFrames)
+                ++blendAt;
         }
         if (supplied) {
             lastSample = {out[(supplied - 1) * 2], out[(supplied - 1) * 2 + 1]};
@@ -191,8 +229,15 @@ struct PipeWirePlayback::Impl {
             }
             lastSample = {};
             recovering = true;
+            blendAt = BlendFrames;
         }
         read.store(r + supplied, std::memory_order_release);
+        if (skipped) {
+            catchupBefore = skipped + keep;
+            catchupKept = keep;
+            skippedFrames.fetch_add(skipped, std::memory_order_relaxed);
+            catchups.fetch_add(1, std::memory_order_release);
+        }
         data.chunk->offset = 0;
         data.chunk->stride = Stride;
         data.chunk->size = uint32_t(frames * Stride);
@@ -247,6 +292,8 @@ void PipeWirePlayback::pause() {
 }
 
 bool PipeWirePlayback::resume() {
+    impl->startupUntil = td::nowNs() + 2000000000ULL;
+    impl->fadeIn = true;
     impl->enabled = true;
     pw_thread_loop_lock(impl->loop);
     int result = pw_stream_set_active(impl->stream, true);
@@ -260,11 +307,20 @@ void PipeWirePlayback::setRate(double ratio) {
     impl->ratio = ratio;
 }
 
+void PipeWirePlayback::setLatencyTarget(double milliseconds, unsigned packetFrames) {
+    impl->keepFrames = unsigned(std::clamp(milliseconds, 1.0, 200.0) * td::audio::Rate / 1000);
+    impl->guardFrames = 2 * std::max(packetFrames, impl->requestedPeriod);
+}
+
 PipeWirePlayback::Timing PipeWirePlayback::timing() const {
     auto &s = *impl;
     Timing out{};
     out.underruns = s.underruns.load();
     out.missingFrames = s.missingFrames.load();
+    out.catchups = s.catchups.load();
+    out.skippedFrames = s.skippedFrames.load();
+    out.catchupBeforeMs = double(s.catchupBefore.load()) * 1000 / td::audio::Rate;
+    out.catchupKeptMs = double(s.catchupKept.load()) * 1000 / td::audio::Rate;
     out.periodFrames = s.periodFrames.load();
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
         auto before = s.timingSeq.load(std::memory_order_acquire);
@@ -307,6 +363,9 @@ bool PipeWirePlayback::resume() {
 }
 
 void PipeWirePlayback::setRate(double) {
+}
+
+void PipeWirePlayback::setLatencyTarget(double, unsigned) {
 }
 
 PipeWirePlayback::Timing PipeWirePlayback::timing() const {

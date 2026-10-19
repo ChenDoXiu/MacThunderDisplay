@@ -11,6 +11,8 @@ class PipeWirePlayback {
     struct Timing {
         uint64_t captureNs = 0, presentationNs = 0;
         uint64_t underruns = 0, missingFrames = 0;
+        uint64_t catchups = 0, skippedFrames = 0;
+        double catchupBeforeMs = 0, catchupKeptMs = 0;
         double deviceMs = 0;
         unsigned periodFrames = 0;
     };
@@ -23,5 +25,6 @@ class PipeWirePlayback {
     void pause();
     bool resume();
     void setRate(double ratio);
+    void setLatencyTarget(double milliseconds, unsigned packetFrames);
     Timing timing() const;
 };

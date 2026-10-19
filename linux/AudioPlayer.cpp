@@ -138,12 +138,17 @@ struct AudioPlayer::Impl {
         uint64_t currentSession = 0, next = 0, lastPacket = 0, gapAt = 0;
         uint64_t reportAt = td::nowNs(), lastPackets = 0;
         uint64_t lastCapture = 0, lastRateAt = 0;
+        uint64_t seenCatchups = 0, fallbackCatchups = 0, fallbackSkipped = 0, startupUntil = 0;
         double playoutMs = 0;
         float playbackRatio = 1.f;
         bool playing = false;
         unsigned frames = LegacyFrames;
         size_t payloadBytes = frames * Channels * sizeof(int16_t);
+        unsigned fadeRemaining = 64;
         std::array<uint8_t, PayloadSize> silence{};
+        auto targetMs = [&] {
+            return requestedBufferMs ? double(requestedBufferMs) : lowLatency.load() ? 16.0 : 55.0;
+        };
         auto reset = [&] {
             playbackStarted = false;
             pausePlayback();
@@ -154,20 +159,56 @@ struct AudioPlayer::Impl {
             playoutMs = 0;
             playbackRatio = 1.f;
             playing = false;
+            startupUntil = 0;
+            fadeRemaining = 64;
             setRate(1.f);
             queuedMs = softwareMs = outputMs = 0;
             estimatedMs = -1;
         };
         auto feed = [&](const uint8_t *pcm, uint64_t captureNs) {
             int queued = queuedBytes();
-            if (queued > int(BytesPerSecond * std::max(100, requestedBufferMs + 50) / 1000)) {
+            // Native playback trims in its RT consumer, including any backlog
+            // accumulated while the device was activating asynchronously.
+            const double guardMs = playing && td::nowNs() >= startupUntil ? 20 : 4;
+            if (!native && queued > int(BytesPerSecond * (targetMs() + guardMs) / 1000)) {
                 clearPlayback();
+                fallbackCatchups++;
+                fallbackSkipped += queued / (Channels * sizeof(int16_t));
                 queued = 0;
-                resets++;
+                fadeRemaining = 64;
+                lastRateAt = 0;
+                playoutMs = 0;
+                playbackRatio = 1.f;
+                setRate(1.f);
+            }
+            std::array<uint8_t, PayloadSize> faded;
+            if (!native && fadeRemaining) {
+                memcpy(faded.data(), pcm, payloadBytes);
+                for (unsigned i = 0; i < frames && fadeRemaining; ++i, --fadeRemaining)
+                    for (unsigned channel = 0; channel < Channels; ++channel) {
+                        size_t offset = (i * Channels + channel) * sizeof(int16_t);
+                        int16_t value =
+                            int16_t(uint16_t(pcm[offset]) | (uint16_t(pcm[offset + 1]) << 8));
+                        value = int16_t(int(value) * int(65 - fadeRemaining) / 64);
+                        faded[offset] = uint16_t(value) & 255;
+                        faded[offset + 1] = uint16_t(value) >> 8;
+                    }
+                pcm = faded.data();
             }
             if (!(native ? native->put(pcm, frames, captureNs)
-                         : SDL_PutAudioStreamData(stream, pcm, int(payloadBytes))))
+                         : SDL_PutAudioStreamData(stream, pcm, int(payloadBytes)))) {
+                // If device activation stalls beyond the ring capacity, make
+                // the consumer discard everything before accepting fresh PCM.
+                if (native) {
+                    native->clear();
+                    resets++;
+                    playoutMs = 0;
+                    lastRateAt = 0;
+                    playbackRatio = 1.f;
+                    setRate(1.f);
+                }
                 return;
+            }
             queued += int(payloadBytes);
             queuedMs = double(queued) * 1000 / BytesPerSecond;
             const unsigned primeMs =
@@ -176,8 +217,11 @@ struct AudioPlayer::Impl {
                 : lowLatency.load() ? 8
                                     : 30;
             if (!playing && queued >= int(BytesPerSecond * primeMs / 1000)) {
+                if (native)
+                    native->setLatencyTarget(targetMs(), frames);
                 playbackStarted = true;
                 playing = resumePlayback();
+                startupUntil = td::nowNs() + 2000000000ULL;
                 if (!playing)
                     playbackStarted = false;
             }
@@ -269,6 +313,22 @@ struct AudioPlayer::Impl {
                 pending.erase(it);
                 gapAt = 0;
             }
+            if (native) {
+                auto timing = native->timing();
+                if (timing.catchups != seenCatchups) {
+                    seenCatchups = timing.catchups;
+                    std::cerr << "[AudioCatchup] queued_before_ms=" << timing.catchupBeforeMs
+                              << " retained_ms=" << timing.catchupKeptMs
+                              << " skipped_ms=" << timing.catchupBeforeMs - timing.catchupKeptMs
+                              << " blend_frames=64\n";
+                    // Do not keep accelerating against a pre-trim EWMA after
+                    // the consumer has already removed the excess latency.
+                    playoutMs = 0;
+                    lastRateAt = 0;
+                    playbackRatio = 1.f;
+                    setRate(1.f);
+                }
+            }
             if (playing && lastCapture && now - lastRateAt >= 250000000) {
                 auto estimate = clock.estimate(currentSession, now);
                 if (estimate.valid) {
@@ -283,12 +343,11 @@ struct AudioPlayer::Impl {
                         playoutMs = playoutMs ? .8 * playoutMs + .2 * delay : delay;
                         // Correct clock drift and excess latency gently. Updating
                         // once per 250 ms avoids chasing each individual packet.
-                        double targetMs = requestedBufferMs   ? requestedBufferMs
-                                          : lowLatency.load() ? 16
-                                                              : 55;
                         playbackRatio =
-                            float(1 + std::clamp((playoutMs - targetMs) / 4000, -.005, .005));
+                            float(1 + std::clamp((playoutMs - targetMs()) / 4000, -.005, .005));
                         setRate(playbackRatio);
+                        if (native)
+                            native->setLatencyTarget(targetMs(), frames);
                         softwareMs = playoutMs;
                     }
                 }
@@ -323,6 +382,11 @@ struct AudioPlayer::Impl {
                               << " output_ms=" << outputMs.load()
                               << " estimated_playout_ms=" << estimatedMs.load()
                               << " missing_frames=" << (native ? native->timing().missingFrames : 0)
+                              << " catchups="
+                              << (native ? native->timing().catchups : fallbackCatchups)
+                              << " skipped_ms="
+                              << double(native ? native->timing().skippedFrames : fallbackSkipped) *
+                                     1000 / Rate
                               << " period_frames=" << (native ? native->timing().periodFrames : 256)
                               << " rate=" << playbackRatio << '\n';
                 lastPackets = total;
