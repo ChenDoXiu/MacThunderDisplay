@@ -1,77 +1,79 @@
 # ThunderDisplay
 
-将 Linux 电脑作为 Mac 的局域网扩展屏幕，通过 Linux 的键盘和鼠标控制 Mac。
+English | [简体中文](README.zh-CN.md)
 
-Mac 端创建独立的虚拟显示器并采集、编码画面；Linux 客户端负责显示和输入回传。支持普通局域网和雷电网桥，分辨率、缩放、刷新率及编码参数均在客户端设置。
+Use a Linux computer as an extended display for your Mac over a local network, with keyboard and mouse control from Linux.
 
-## 功能
+The Mac sender creates a virtual display, captures its contents, and encodes the video. The Linux client displays the stream and sends input back to the Mac. Both ordinary LAN connections and Thunderbolt networking are supported. Resolution, scaling, refresh rate, and encoding settings are configured on the client.
 
-- **虚拟副屏**：扩展 Mac 桌面，自定义输出分辨率、1× / 2× 及分数缩放。
-- **两种编码**：PyroWave GPU 编解码，以及 Mac VideoToolbox 硬件 H.264 编码；Linux H.264 优先使用 VAAPI 硬件解码。
-- **画质与性能**：Mac 端 Lanczos 缩放、PyroWave 变化区域编码、独立光标传输与绘制。
-- **键鼠控制**：快捷键捕获、跨屏控制、游戏鼠标相对移动，以及可配置的释放控制和全屏快捷键。
-- **连接与状态**：局域网发现、手动输入地址、客户端性能叠加层、Mac 菜单栏控制和登录时自动启动。
+## Features
 
-目前发送端为 macOS，接收端为 Linux，项目仍处于早期开发阶段。
+- **Virtual extended display:** Extend your Mac desktop with a custom output resolution, 1× / 2× scaling, and fractional scaling.
+- **Two codecs:** PyroWave GPU encoding and decoding, or hardware H.264 encoding through macOS VideoToolbox. The Linux H.264 decoder prefers VAAPI hardware acceleration.
+- **Image quality and performance:** Lanczos scaling on the Mac, dirty-region encoding for PyroWave, and separate cursor transmission and rendering.
+- **Keyboard and mouse control:** Keyboard shortcut capture, movement across display boundaries, relative mouse input for games, and configurable release-control and fullscreen shortcuts.
+- **Connection and status:** LAN discovery, manual address entry, a client performance overlay, a Mac menu bar interface, and launch at login.
 
-## 系统要求
+The sender currently runs on macOS and the receiver runs on Linux. The project is in early development.
 
-| 端 | 要求 |
+## Requirements
+
+| Component | Requirements |
 | --- | --- |
-| Mac | Apple Silicon，macOS 14 或更新版本；允许屏幕录制和辅助功能权限 |
-| Linux | 支持 Vulkan 1.3 及 PyroWave 所需 subgroup / 8-bit buffer 功能的 GPU 和驱动；支持 X11 / Wayland |
-| H.264 硬件解码 | Linux 安装适配 GPU 的 VAAPI 驱动；不可用时尝试软件解码 |
-| 网络 | 两端 IPv4 可达，并允许双向 UDP 通信；Mac 控制与发现端口为 UDP `42420` |
+| Mac | Apple Silicon, macOS 14 or later, with Screen Recording and Accessibility permissions |
+| Linux | A GPU and driver supporting Vulkan 1.3 and the subgroup / 8-bit buffer features required by PyroWave; X11 or Wayland |
+| Hardware H.264 decoding | A VAAPI driver for the Linux GPU; software decoding is attempted if hardware decoding is unavailable |
+| Network | IPv4 connectivity and bidirectional UDP traffic; the Mac uses UDP port `42420` for control and discovery |
 
-两种编码模式目前都使用 Vulkan 显示路径。雷电网桥也需要先由系统配置 IP 地址，程序不负责分配地址。
+Both codecs currently use the Vulkan presentation path. Thunderbolt networking also requires IP addresses to be configured by the operating systems; the application does not assign addresses.
 
-## 安装与连接
+## Installation and connection
 
-预编译包请查看 [Releases](https://github.com/ChenDoXiu/MacThunderDisplay/releases)。尚无适用安装包时，可按下文从源码构建。
+Check [Releases](https://github.com/ChenDoXiu/MacThunderDisplay/releases) for prebuilt packages. If no suitable package is available, build from source using the instructions below.
 
-1. 在 Mac 上打开 `ThunderDisplay.app`，通过菜单栏面板授予屏幕录制和辅助功能权限。应用启动后自动监听连接。
-2. 在 Linux 上解压客户端包，运行包内的 `./ThunderDisplay`。运行 `./install.sh` 可为当前用户安装并添加应用菜单入口，无需 root。
-3. 在客户端选择发现的 Mac，或填写 Mac 的 IPv4 地址 / 主机名。
-4. 设置输出分辨率、界面缩放、刷新率、编码和码率后连接。需要调整屏幕排列时，使用 Mac 的系统显示器设置。
+1. Open `ThunderDisplay.app` on the Mac. Use its menu bar panel to grant Screen Recording and Accessibility permissions. The application starts listening automatically.
+2. Extract the Linux client package and run `./ThunderDisplay` inside it. Run `./install.sh` to install it for the current user and add an application menu entry; root access is not required.
+3. Select a discovered Mac in the client, or enter its IPv4 address / hostname manually.
+4. Choose the output resolution, interface scale, refresh rate, codec, and bitrate, then connect. Use the Mac's system display settings to arrange the displays.
 
-Mac 安装包使用本地开发签名，未经过 Apple 公证；首次打开可能需要在系统设置的“隐私与安全性”中允许打开。源码构建会保留本机的开发签名身份，避免每次重建都更换身份。
+The Mac package uses a local development signature and is not notarized by Apple. On first launch, you may need to allow it in System Settings → Privacy & Security. Source builds retain the local signing identity across rebuilds.
 
-Linux 预编译包仍依赖宿主的 glibc、Vulkan 和显卡驱动。首批 x86_64 包构建于 glibc 2.44 环境，旧发行版建议从源码构建；具体要求见包内 `BUILD-INFO.txt`。
+The Linux package still depends on the host's glibc, Vulkan loader, and GPU drivers. The initial x86_64 package was built with glibc 2.44; build from source on older distributions. See `BUILD-INFO.txt` inside the package for its runtime requirements.
 
-### 默认快捷键
+### Default shortcuts
 
-在接收窗口获得焦点时使用：
+These shortcuts work while the receiver window has focus:
 
-| 快捷键 | 功能 |
+| Shortcut | Action |
 | --- | --- |
-| `F8` | 释放 / 恢复键鼠控制 |
-| `Ctrl+Shift+F11` | 切换全屏 |
-| `Ctrl+Alt+Shift+S` | 显示 / 隐藏性能叠加层 |
+| `F8` | Release / resume keyboard and mouse control |
+| `Ctrl+Shift+F11` | Toggle fullscreen |
+| `Ctrl+Alt+Shift+S` | Show / hide the performance overlay |
 
-释放控制和全屏快捷键可在客户端修改，并在独占捕获模式下保留给本地处理。叠加层可查看帧率、带宽、延迟和丢帧等统计；软件计时不包含显示器实际发光的耗时。
+The release-control and fullscreen shortcuts can be changed in the client. They remain local even during exclusive input capture. The overlay shows frame rate, bandwidth, latency, dropped frames, and other statistics. Software timing does not include the time until the physical display emits light.
 
-### 编码选择
+### Choosing a codec
 
-| 编码 | 适用场景 | 特点 |
+| Codec | Use case | Characteristics |
 | --- | --- | --- |
-| PyroWave | 雷电网桥、高带宽有线网络 | GPU 编解码，支持 4:4:4 和变化区域优化；带宽需求较高 |
-| H.264 | 普通局域网 | 带宽需求较低；高频网格和彩色文字边缘可能出现压缩损失 |
+| PyroWave | Thunderbolt networking and high-bandwidth wired networks | GPU encoding and decoding, 4:4:4 support, and dirty-region optimizations; higher bandwidth requirements |
+| H.264 | Ordinary LAN connections | Lower bandwidth requirements; fine patterns and colored text edges may show compression artifacts |
 
-“链路速率”用于发送节流，应按实际网络能力设置。视频码率也应留出网络余量。
+The link-speed setting controls send pacing and should match the actual network capacity. Leave some network headroom when choosing the video bitrate.
 
-### 分辨率与缩放
+### Resolution and scaling
 
-客户端的输出分辨率是**实际传输的像素尺寸**，界面缩放决定 Mac 桌面的逻辑尺寸。例如同样输出 `2240 × 1400`：
+The client's output resolution is the **pixel size transmitted over the network**. Interface scaling determines the logical size of the Mac desktop. For the same `2240 × 1400` output:
 
-| 界面缩放 | Mac 逻辑桌面 | Mac 渲染尺寸 | 传输尺寸 |
+| Interface scale | Mac logical desktop | Mac render size | Transmitted size |
 | --- | --- | --- | --- |
 | 1× | 2240 × 1400 | 2240 × 1400 | 2240 × 1400 |
 | 2× | 1120 × 700 | 2240 × 1400 | 2240 × 1400 |
 | 1.4× | 1600 × 1000 | 3200 × 2000 | 2240 × 1400 |
 
-1× 使用原生渲染，2× 使用 Retina 渲染；其他倍率先按 Retina 2× 渲染，再由 Mac 使用 Lanczos 缩放到输出尺寸。实际采集尺寸与输出一致时跳过缩放。
+At 1×, the Mac renders at native resolution. At 2×, it uses Retina rendering. Other scale factors use Retina 2× rendering followed by Lanczos scaling on the Mac to reach the output size. Scaling is skipped when the captured size already matches the output.
 
-## 从源码构建
+## Building from source
 
 ```sh
 git clone https://github.com/ChenDoXiu/MacThunderDisplay.git
@@ -80,35 +82,35 @@ cd MacThunderDisplay
 
 ### macOS
 
-安装 Xcode 或 Command Line Tools、CMake 和 Python 3，然后运行：
+Install Xcode or Command Line Tools, CMake, and Python 3, then run:
 
 ```sh
 bash scripts/build-mac.sh
 open build/ThunderDisplay.app
 ```
 
-脚本会编译 Metal 编码库和发送端、生成应用包并进行本地签名。重复构建时请保留 `~/Library/Application Support/ThunderDisplay/Signing` 中的签名状态；不要将其中的密钥上传到仓库。
+The script builds the Metal codec library and sender, creates the app bundle, and signs it locally. Keep the signing state in `~/Library/Application Support/ThunderDisplay/Signing` across rebuilds. Do not commit its private keys to the repository.
 
 ### Linux
 
-构建依赖：C++17 编译器、Git、CMake 3.24+、pkg-config、Python 3、Qt 6.5+（Widgets / Network）、SDL3、Vulkan 开发文件、`glslc` 和 FFmpeg 开发文件（libavcodec / libavutil）。Wayland 开发文件和 libsystemd 为可选依赖。
+Build dependencies: a C++17 compiler, Git, CMake 3.24+, pkg-config, Python 3, Qt 6.5+ (Widgets / Network), SDL3, Vulkan development files, `glslc`, and FFmpeg development files (libavcodec / libavutil). Wayland development files and libsystemd are optional.
 
 ```sh
 bash scripts/build-linux.sh
 ./build/linux/thunder-display-client
 ```
 
-构建脚本会下载固定版本的 PyroWave 及其依赖，首次构建需要网络。PyroWave 自身的其他构建依赖由其 CMake 配置检查。
+The build script downloads a pinned PyroWave revision and its dependencies, so the first build requires network access. PyroWave's CMake configuration checks its additional build dependencies.
 
-生成可分发的 Linux 包：
+To create a distributable Linux package:
 
 ```sh
 python3 scripts/package-linux.py
 ```
 
-产物位于 `build/dist/`，包含客户端、相关动态库和安装脚本。Vulkan 加载器、显卡驱动及 glibc 仍由目标系统提供。
+The archive is written to `build/dist/` and includes the client, dependency libraries, and installation scripts. The target system must still provide the Vulkan loader, GPU drivers, and glibc.
 
-也可以直接运行接收器，例如使用 H.264：
+You can also run the receiver directly, for example with H.264:
 
 ```sh
 ./build/linux/thunder-display-receiver \
@@ -118,28 +120,28 @@ python3 scripts/package-linux.py
   --fps 60 --fullscreen
 ```
 
-将示例 IP 替换为 Mac 的实际地址；其余参数见 `--help`。
+Replace the example IP address with your Mac's address. Run with `--help` for additional options.
 
-## 当前限制
+## Current limitations
 
-- 当前协议使用 UDP，尚未实现身份认证和传输加密，仅适合可信局域网。
-- 自动发现依赖 IPv4 广播；跨网段或广播受限时可手动填写地址。
-- H.264 当前限制为单边不超过 4096 像素、总像素不超过约 9 MP、码率不超过 200 Mbps。
-- 虚拟显示器依赖 Apple 未公开的 CoreGraphics 接口，系统升级后可能需要适配。
-- 刷新率上限设置不代表实际帧率保证；性能取决于分辨率、画面内容、网络和两端硬件。
+- The protocol uses UDP without authentication or transport encryption. Use it only on trusted local networks.
+- Automatic discovery uses IPv4 broadcasts. Enter an address manually when connecting across subnets or when broadcasts are restricted.
+- H.264 is currently limited to 4096 pixels per axis, approximately 9 MP in total, and 200 Mbps.
+- Virtual displays rely on undocumented Apple CoreGraphics interfaces and may require changes after macOS updates.
+- The configured refresh rate is a target, not a guaranteed frame rate. Performance depends on resolution, screen content, network conditions, and hardware on both ends.
 
-## 代码结构
+## Source layout
 
 ```text
-mac/        虚拟显示器、采集、编码、输入注入和菜单栏界面
-linux/      Qt 设置界面、收包、解码、Vulkan 显示和输入捕获
-common/     传输协议、光标数据和显示布局
-scripts/    构建、签名和 Linux 打包安装脚本
-vendor/     PyroWave Metal 和 stb 等第三方源码
+mac/        Virtual display, capture, encoding, input injection, and menu bar UI
+linux/      Qt settings UI, packet reception, decoding, Vulkan display, and input capture
+common/     Transport protocol, cursor data, and display layout
+scripts/    Build, signing, and Linux packaging / installation scripts
+vendor/     Third-party sources, including PyroWave Metal and stb
 ```
 
-## 许可证与致谢
+## License and acknowledgments
 
-项目使用 [MIT 许可证](LICENSE)。GPU 编解码基于 [Themaister / PyroWave](https://github.com/Themaister/pyrowave)，性能叠加层使用 [stb_easy_font](https://github.com/nothings/stb)。第三方来源和许可说明见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。
+ThunderDisplay is licensed under the [MIT License](LICENSE). GPU encoding and decoding are based on [Themaister / PyroWave](https://github.com/Themaister/pyrowave). The performance overlay uses [stb_easy_font](https://github.com/nothings/stb). See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) for third-party sources and license information.
 
-仓库保留源码、构建工具和必要许可证，构建产物通过 Releases 单独发布。
+This repository contains source code, build tools, and required license files. Build artifacts are distributed separately through Releases.
