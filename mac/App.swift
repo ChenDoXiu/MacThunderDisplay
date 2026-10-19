@@ -22,7 +22,9 @@ final class SenderModel: ObservableObject {
         freopen("/tmp/thunder-display-sender.log", "a", stdout)
         setbuf(stderr, nil)
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.start() }
     }
     func refresh() {
@@ -36,13 +38,16 @@ final class SenderModel: ObservableObject {
         inputPermission = td_input_permission(0) != 0
         let permissions = "screen=\(screenPermission) input=\(inputPermission)"
         if permissions != lastPermissions {
-            FileHandle.standardError.write(Data(("[ThunderDisplay] Permissions: " + permissions + "\n").utf8))
+            FileHandle.standardError.write(
+                Data(("[ThunderDisplay] Permissions: " + permissions + "\n").utf8))
             lastPermissions = permissions
         }
     }
     func start() {
         error = String(cString: td_start())
-        if !error.isEmpty { FileHandle.standardError.write(Data(("[ThunderDisplay] " + error + "\n").utf8)) }
+        if !error.isEmpty {
+            FileHandle.standardError.write(Data(("[ThunderDisplay] " + error + "\n").utf8))
+        }
         active = error.isEmpty
         refresh()
     }
@@ -53,14 +58,18 @@ final class SenderModel: ObservableObject {
     func setLaunchAtLogin(_ enabled: Bool) {
         loginError = ""
         do {
-            if enabled { try SMAppService.mainApp.register() }
-            else { try SMAppService.mainApp.unregister() }
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
         } catch {
             loginError = "自动启动设置失败：\(error.localizedDescription)"
             FileHandle.standardError.write(Data(("[LoginItem] " + loginError + "\n").utf8))
         }
         refresh()
-        FileHandle.standardError.write(Data(("[LoginItem] status=\(SMAppService.mainApp.status.rawValue)\n").utf8))
+        FileHandle.standardError.write(
+            Data(("[LoginItem] status=\(SMAppService.mainApp.status.rawValue)\n").utf8))
     }
 }
 
@@ -81,7 +90,9 @@ struct ContentView: View {
         let routine = ["准备就绪", "串流中", "UDP 42420 监听中", "虚拟屏采集已启动", "已应用 Linux 客户端显示设置", "已停止"]
         return routine.contains(where: { model.status.hasPrefix($0) }) ? nil : model.status
     }
-    private func permissionRow(_ title: String, granted: Bool, authorize: @escaping () -> Void) -> some View {
+    private func permissionRow(_ title: String, granted: Bool, authorize: @escaping () -> Void)
+        -> some View
+    {
         HStack(spacing: 8) {
             Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle")
                 .foregroundStyle(granted ? Color.green : Color.orange)
@@ -120,14 +131,23 @@ struct ContentView: View {
             }
             Divider()
             VStack(spacing: 10) {
-                permissionRow("屏幕录制", granted: model.screenPermission) { _ = td_screen_permission(1); model.refresh() }
-                permissionRow("键鼠控制", granted: model.inputPermission) { _ = td_input_permission(1); model.refresh() }
+                permissionRow("屏幕录制", granted: model.screenPermission) {
+                    _ = td_screen_permission(1)
+                    model.refresh()
+                }
+                permissionRow("键鼠控制", granted: model.inputPermission) {
+                    _ = td_input_permission(1)
+                    model.refresh()
+                }
             }
             Divider()
             HStack {
-                Toggle("登录时启动", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                    .toggleStyle(.switch).controlSize(.small)
-                    .fixedSize()
+                Toggle(
+                    "登录时启动",
+                    isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) })
+                )
+                .toggleStyle(.switch).controlSize(.small)
+                .fixedSize()
                 Spacer()
                 Button("断开客户端") { model.disconnectClient() }
                     .controlSize(.small).disabled(!model.clientConnected)
@@ -141,8 +161,10 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }.padding(16).frame(width: 320)
-        .onAppear { model.refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh() }
+            .onAppear { model.refresh() }
+            .onReceive(
+                NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            ) { _ in model.refresh() }
     }
 }
 
@@ -167,22 +189,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = content
         popover.behavior = .transient
         popover.animates = false
-        let quit = NSMenuItem(title: "退出 ThunderDisplay", action: #selector(quitApplication(_:)), keyEquivalent: "")
+        let quit = NSMenuItem(
+            title: "退出 ThunderDisplay", action: #selector(quitApplication(_:)), keyEquivalent: "")
         quit.target = self
         contextMenu.addItem(quit)
         modelSubscription = model.$active.combineLatest(model.$clientConnected)
             .sink { [weak self] active, connected in
                 guard let self else { return }
-                self.statusItem.button?.image = NSImage(systemSymbolName: active ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle", accessibilityDescription: "ThunderDisplay")
+                self.statusItem.button?.image = NSImage(
+                    systemSymbolName: active
+                        ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle",
+                    accessibilityDescription: "ThunderDisplay")
                 self.statusItem.button?.image?.isTemplate = true
-                self.statusItem.button?.toolTip = connected ? "ThunderDisplay · 客户端已连接" : active ? "ThunderDisplay · 监听中" : "ThunderDisplay · 未就绪"
+                self.statusItem.button?.toolTip =
+                    connected
+                    ? "ThunderDisplay · 客户端已连接"
+                    : active ? "ThunderDisplay · 监听中" : "ThunderDisplay · 未就绪"
             }
     }
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         let event = NSApplication.shared.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
-            contextMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+            contextMenu.popUp(
+                positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
         } else if popover.isShown {
             popover.performClose(nil)
         } else {

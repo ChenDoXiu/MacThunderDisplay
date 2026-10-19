@@ -7,12 +7,13 @@
 #include <vector>
 
 class Discovery final : public QObject {
- QUdpSocket socket;
- QByteArray nonce;
- std::vector<std::unique_ptr<QUdpSocket>> interfaceSockets;
- void readReplies(QUdpSocket *source);
-public:
- std::function<void(const QString&,const QHostAddress&)> found;
- explicit Discovery(QObject *parent=nullptr);
- bool scan(const QString &manualHost);
+    QUdpSocket socket;
+    QByteArray nonce;
+    std::vector<std::unique_ptr<QUdpSocket>> interfaceSockets;
+    void readReplies(QUdpSocket *source);
+
+  public:
+    std::function<void(const QString &, const QHostAddress &)> found;
+    explicit Discovery(QObject *parent = nullptr);
+    bool scan(const QString &manualHost);
 };

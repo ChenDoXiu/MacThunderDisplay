@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Keep one local signing identity across rebuilds; never change system trust."""
+
 import hashlib
 import os
 from pathlib import Path
@@ -25,8 +26,9 @@ if not keychain.exists():
     password = secrets.token_urlsafe(32)
     password_file.write_text(password)
     password_file.chmod(0o600)
-    original = shlex.split(subprocess.check_output(
-        ["security", "list-keychains", "-d", "user"], text=True))
+    original = shlex.split(
+        subprocess.check_output(["security", "list-keychains", "-d", "user"], text=True)
+    )
     try:
         run("security", "create-keychain", "-p", password, str(keychain))
     finally:
@@ -35,36 +37,105 @@ if not keychain.exists():
     run("security", "set-keychain-settings", "-lut", "21600", str(keychain))
     with tempfile.TemporaryDirectory(prefix="thunderdisplay-signing-") as temporary:
         work = Path(temporary)
-        run("/usr/bin/openssl", "req", "-x509", "-newkey", "rsa:3072", "-nodes",
-            "-days", "3650", "-subj", "/CN=ThunderDisplay Local Development/",
-            "-addext", "basicConstraints=critical,CA:FALSE",
-            "-addext", "keyUsage=critical,digitalSignature",
-            "-addext", "extendedKeyUsage=codeSigning",
-            "-keyout", str(work / "key.pem"), "-out", str(certificate),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run(
+            "/usr/bin/openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:3072",
+            "-nodes",
+            "-days",
+            "3650",
+            "-subj",
+            "/CN=ThunderDisplay Local Development/",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
+            "-addext",
+            "keyUsage=critical,digitalSignature",
+            "-addext",
+            "extendedKeyUsage=codeSigning",
+            "-keyout",
+            str(work / "key.pem"),
+            "-out",
+            str(certificate),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         # A temporary file avoids exposing the PKCS#12 password in process arguments.
         secret = work / "password"
         secret.write_text(password)
-        run("/usr/bin/openssl", "pkcs12", "-export", "-inkey", str(work / "key.pem"),
-            "-in", str(certificate), "-name", "ThunderDisplay Local Development",
-            "-out", str(work / "identity.p12"), "-passout", "file:" + str(secret))
-        run("security", "import", str(work / "identity.p12"), "-k", str(keychain),
-            "-P", password, "-x", "-T", "/usr/bin/codesign")
-        run("security", "set-key-partition-list", "-S", "apple-tool:,codesign:",
-            "-s", "-k", password, str(keychain), stdout=subprocess.DEVNULL)
+        run(
+            "/usr/bin/openssl",
+            "pkcs12",
+            "-export",
+            "-inkey",
+            str(work / "key.pem"),
+            "-in",
+            str(certificate),
+            "-name",
+            "ThunderDisplay Local Development",
+            "-out",
+            str(work / "identity.p12"),
+            "-passout",
+            "file:" + str(secret),
+        )
+        run(
+            "security",
+            "import",
+            str(work / "identity.p12"),
+            "-k",
+            str(keychain),
+            "-P",
+            password,
+            "-x",
+            "-T",
+            "/usr/bin/codesign",
+        )
+        run(
+            "security",
+            "set-key-partition-list",
+            "-S",
+            "apple-tool:,codesign:",
+            "-s",
+            "-k",
+            password,
+            str(keychain),
+            stdout=subprocess.DEVNULL,
+        )
 
 password = password_file.read_text()
 run("security", "unlock-keychain", "-p", password, str(keychain))
-der = subprocess.check_output(["/usr/bin/openssl", "x509", "-in", str(certificate),
-                               "-outform", "DER"])
+der = subprocess.check_output(
+    ["/usr/bin/openssl", "x509", "-in", str(certificate), "-outform", "DER"]
+)
 identity = hashlib.sha1(der).hexdigest().upper()
 # Pin the certificate as well as the bundle ID. Rebuilds retain this requirement.
-requirement = ('=designated => identifier "dev.thunderdisplay.sender" '
-               'and certificate leaf = H"' + identity + '"')
+requirement = (
+    '=designated => identifier "dev.thunderdisplay.sender" '
+    'and certificate leaf = H"' + identity + '"'
+)
 for library in sorted((app / "Contents/Frameworks").glob("*.dylib")):
-    run("codesign", "--force", "--sign", identity, "--keychain", str(keychain),
-        "--timestamp=none", str(library))
-run("codesign", "--force", "--sign", identity, "--keychain", str(keychain),
-    "--timestamp=none", "--requirements", requirement, str(app))
+    run(
+        "codesign",
+        "--force",
+        "--sign",
+        identity,
+        "--keychain",
+        str(keychain),
+        "--timestamp=none",
+        str(library),
+    )
+run(
+    "codesign",
+    "--force",
+    "--sign",
+    identity,
+    "--keychain",
+    str(keychain),
+    "--timestamp=none",
+    "--requirements",
+    requirement,
+    str(app),
+)
 run("codesign", "--verify", "--deep", "--strict", str(app))
 print("Stable local signing certificate: " + identity)

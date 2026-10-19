@@ -1,6 +1,11 @@
 # Only application code, build tooling, artwork and licensed dependencies.
 /*
 !/.gitignore
+!/.clang-format
+!/.cmake-format.json
+!/.swift-format
+!/.editorconfig
+!/pyproject.toml
 !/CMakeLists.txt
 !/LICENSE
 !/THIRD_PARTY_NOTICES

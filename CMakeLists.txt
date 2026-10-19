@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum supported macOS version")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET
+      "14.0"
+      CACHE STRING "Minimum supported macOS version")
 endif()
-project(ThunderDisplay VERSION 0.2.0 LANGUAGES C CXX)
+project(
+  ThunderDisplay
+  VERSION 0.2.0
+  LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 find_package(Threads REQUIRED)
 add_library(td-common common/Transport.cpp)
@@ -14,21 +19,43 @@ if(APPLE)
   add_library(td-engine STATIC mac/Engine.mm mac/H264Encoder.mm)
   target_compile_options(td-engine PRIVATE -fobjc-arc)
   target_include_directories(td-engine PRIVATE vendor/pyrowave-metal)
-  target_link_libraries(td-engine PUBLIC td-common pyrowave-metal "-framework VideoToolbox" "-framework Cocoa" "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo" "-framework Metal" "-framework MetalPerformanceShaders" "-framework IOSurface" "-framework Carbon" "-framework IOKit")
+  target_link_libraries(
+    td-engine
+    PUBLIC td-common
+           pyrowave-metal
+           "-framework VideoToolbox"
+           "-framework Cocoa"
+           "-framework ScreenCaptureKit"
+           "-framework CoreMedia"
+           "-framework CoreVideo"
+           "-framework Metal"
+           "-framework MetalPerformanceShaders"
+           "-framework IOSurface"
+           "-framework Carbon"
+           "-framework IOKit")
 else()
-  set(PYROWAVE_UTILS OFF CACHE BOOL "" FORCE)
-  set(PYROWAVE_DEVEL OFF CACHE BOOL "" FORCE)
+  set(PYROWAVE_UTILS
+      OFF
+      CACHE BOOL "" FORCE)
+  set(PYROWAVE_DEVEL
+      OFF
+      CACHE BOOL "" FORCE)
   add_library(pyrowave-shared SHARED IMPORTED)
-  set_target_properties(pyrowave-shared PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/build/codec/libpyrowave-shared.so")
+  set_target_properties(
+    pyrowave-shared PROPERTIES IMPORTED_LOCATION
+                               "${CMAKE_CURRENT_SOURCE_DIR}/build/codec/libpyrowave-shared.so")
   find_package(Vulkan REQUIRED)
   find_package(SDL3 REQUIRED CONFIG)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
-  add_executable(thunder-display-client linux/ClientUI.cpp linux/Discovery.cpp linux/NativeScreen.cpp)
+  add_executable(thunder-display-client linux/ClientUI.cpp linux/Discovery.cpp
+                                        linux/NativeScreen.cpp)
   target_include_directories(thunder-display-client PRIVATE linux common)
   target_link_libraries(thunder-display-client PRIVATE Qt6::Widgets Qt6::Network)
-  add_executable(thunder-display-receiver linux/Main.cpp linux/Receiver.cpp linux/VulkanView.cpp linux/H264Decoder.cpp)
+  add_executable(thunder-display-receiver linux/Main.cpp linux/Receiver.cpp linux/VulkanView.cpp
+                                          linux/H264Decoder.cpp)
   target_include_directories(thunder-display-receiver PRIVATE vendor/pyrowave linux)
-  target_link_libraries(thunder-display-receiver PRIVATE td-common pyrowave-shared SDL3::SDL3 Vulkan::Vulkan)
+  target_link_libraries(thunder-display-receiver PRIVATE td-common pyrowave-shared SDL3::SDL3
+                                                         Vulkan::Vulkan)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(TD_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
   target_link_libraries(thunder-display-receiver PRIVATE PkgConfig::TD_FFMPEG)
@@ -48,12 +75,22 @@ else()
   qt_add_resources(thunder-display-client icons PREFIX "/" FILES assets/thunderdisplay.svg)
   find_program(GLSLC glslc REQUIRED)
   foreach(SHADER present.vert present.frag)
-    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${SHADER}.spv COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/linux/${SHADER} -o ${CMAKE_CURRENT_BINARY_DIR}/${SHADER}.spv DEPENDS linux/${SHADER})
+    add_custom_command(
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${SHADER}.spv
+      COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/linux/${SHADER} -o
+              ${CMAKE_CURRENT_BINARY_DIR}/${SHADER}.spv
+      DEPENDS linux/${SHADER})
     target_sources(thunder-display-receiver PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${SHADER}.spv)
   endforeach()
-  set_target_properties(thunder-display-client thunder-display-receiver PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+  set_target_properties(thunder-display-client thunder-display-receiver PROPERTIES INSTALL_RPATH
+                                                                                   "$ORIGIN/../lib")
   install(TARGETS thunder-display-client thunder-display-receiver RUNTIME DESTINATION bin)
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/present.vert.spv" "${CMAKE_CURRENT_BINARY_DIR}/present.frag.spv" DESTINATION share/thunder-display)
-  get_filename_component(PYROWAVE_RUNTIME_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/build/codec/libpyrowave-shared.so" REALPATH)
-  install(FILES "${PYROWAVE_RUNTIME_LIBRARY}" DESTINATION lib RENAME libpyrowave-shared.so.1)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/present.vert.spv"
+                "${CMAKE_CURRENT_BINARY_DIR}/present.frag.spv" DESTINATION share/thunder-display)
+  get_filename_component(PYROWAVE_RUNTIME_LIBRARY
+                         "${CMAKE_CURRENT_SOURCE_DIR}/build/codec/libpyrowave-shared.so" REALPATH)
+  install(
+    FILES "${PYROWAVE_RUNTIME_LIBRARY}"
+    DESTINATION lib
+    RENAME libpyrowave-shared.so.1)
 endif()
