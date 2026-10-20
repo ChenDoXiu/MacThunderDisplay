@@ -146,5 +146,3 @@ vendor/     PyroWave Metal 和 stb 等第三方源码
 ## 许可证与致谢
 
 项目使用 [MIT 许可证](LICENSE)。GPU 编解码基于 [Themaister / PyroWave](https://github.com/Themaister/pyrowave)，性能叠加层使用 [stb_easy_font](https://github.com/nothings/stb)。第三方来源和许可说明见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。
-
-仓库保留源码、构建工具和必要许可证，构建产物通过 Releases 单独发布。

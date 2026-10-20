@@ -146,5 +146,3 @@ vendor/     Third-party sources, including PyroWave Metal and stb
 ## License and acknowledgments
 
 ThunderDisplay is licensed under the [MIT License](LICENSE). GPU encoding and decoding are based on [Themaister / PyroWave](https://github.com/Themaister/pyrowave). The performance overlay uses [stb_easy_font](https://github.com/nothings/stb). See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) for third-party sources and license information.
-
-This repository contains source code, build tools, and required license files. Build artifacts are distributed separately through Releases.
